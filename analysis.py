@@ -539,135 +539,76 @@ class Analyser(object):
                 ref['atm']['ref_column'] = {}
                 ref['plume']['ref_column'] = {}
 
+                # Each layer's RFM runs are planned for all its gases first, then run
+                # together, several at a time (customXSC.makeGasXSCs; the
+                # cross-sections do not depend on how many), then assembled
+                def layerReference(layer, gases, length, T, P, temps, T_varies):
+                    """Reference column, cross-section at the layer T and P and
+                    calibration of each gas of a layer. A continuum gas is calibrated
+                    in amount (scalings) at T and P; any other gas over `temps` when
+                    the layer temperature varies (T_varies), else it has the
+                    cross-section at T, as a polynomial of degree 0."""
+                    ref[layer]['OD_calib'] = {}
+                    calls, plan = [], []
+                    for gas in gases:
+                        species = speciesOf(gas)      # '<gas>_plume' when the gas is also in the ambient layer
+                        ref_conc = std[species]['conc']
+                        ref_column = ppm2scd(ref_conc, length, temp=T, pres=P)
+                        ref[layer]['ref_column'][gas] = ref_column
+                        first = len(calls)
+                        if species in continuum_gases:
+                            kind = 'continuum'
+                            calls += [dict(conc=ref_conc * sc, species=species, temp=T, pres=P) for sc in scalings]
+                        elif T_varies:
+                            kind = 'calibrated'
+                            calls += [dict(conc=scd2ppm(ref_column, length, temp=t, pres=P), species=species,
+                                           temp=t, pres=P) for t in temps]
+                            calls.append(dict(conc=ref_conc, species=species, temp=T, pres=P))
+                        else:
+                            kind = 'held'
+                            calls.append(dict(conc=ref_conc, species=species, temp=T, pres=P))
+                        plan.append((gas, kind, first))
+
+                    pbar = tqdm(total=len(calls))
+                    pbar.set_description('%s: %i RFM runs' % (', '.join(gases), len(calls)))
+                    Bext = makeGasXSCs(self.wn_start, self.wn_stop, self.nper_wn, calls, pbar=pbar)
+                    pbar.set_description('Done!')
+                    pbar.close()
+
+                    for gas, kind, first in plan:
+                        if kind == 'continuum':
+                            ODs = np.empty([len(self.model_grid), len(scalings)], dtype=float)
+                            for j in range(len(scalings)):
+                                ODs[:, j] = Bext[first + j] * length * 1e3
+                            ref[layer]['OD_calib'][gas] = np.polyfit(scalings, ODs.T, 10)
+                            # the scaling-1 run is the reference amount at T and P
+                            ref[layer][gas] = ODs[:, int(np.argmin(np.abs(scalings - 1.0)))].copy()
+                        elif kind == 'calibrated':
+                            ODs = np.empty([len(self.model_grid), len(temps)], dtype=float)
+                            for j in range(len(temps)):
+                                ODs[:, j] = Bext[first + j] * length * 1e3
+                            ref[layer]['OD_calib'][gas] = np.polyfit(temps, ODs.T, 10)
+                            ref[layer][gas] = Bext[first + len(temps)] * length * 1e3
+                        else:
+                            ref[layer][gas] = Bext[first] * length * 1e3
+                            ref[layer]['OD_calib'][gas] = ref[layer][gas][np.newaxis, :]
+
                 # ----- 1: Atmospheric gases -----
-                if self.retrieval.fit_atm_temp:
+                if atm_T_varies:
                     logger.info('Atmospheric gases %s in range %i - %i K...' % (self.params.atmGasList(), atm_temps.min(), atm_temps.max()))
                 else:
                     logger.info('Atmospheric gases %s at %i K...' % (self.params.atmGasList(), self.geometry.atm_temp))
-                ref['atm']['OD_calib'] = {}
-
-                # Get the list of gases and create a progress bar
-                atm_gases = self.params.atmGasList()
-                n_gas = len(atm_gases)
-                n_continuum = len([gas for gas in atm_gases if gas in continuum_gases])
-                if self.retrieval.fit_atm_temp:
-                    pbar = tqdm(total=n_continuum * len(scalings) + (n_gas - n_continuum) * len(atm_temps))  # Progress bar
-                else:
-                    pbar = tqdm(total=n_continuum * len(scalings) + n_gas - n_continuum)
-
-                # Loop over gases
-                for i, gas in enumerate(atm_gases):
-
-                    pbar.set_description('%s' % gas)    # Update pbar description
-
-                    # Assign reference column amount and find concentration based on pathlength
-                    ref_conc = std[gas]['conc']
-                    ref_column = ppm2scd(ref_conc, self.geometry.pathlength,
-                                                            temp=self.geometry.atm_temp, pres=self.geometry.atm_pres)
-                    ref['atm']['ref_column'][gas] = ref_column
-
-                    # If gas is a continuum gas, use scalings to create a calibration polynomial
-                    if gas in continuum_gases:
-                        ODs = np.empty([len(self.model_grid), len(scalings)], dtype=float)
-                        for j, sc in enumerate(scalings):
-                            pbar.set_description('%s: %.1f scaling' % (gas, sc))  # Change pbar message
-                            # Generate OD cross-section
-                            ODs[:, j] = makeGasXSC(self.wn_start, self.wn_stop, self.nper_wn, conc=ref_conc * sc,
-                                                   species=gas, temp=self.geometry.atm_temp, pres=self.geometry.atm_pres)['Bext'] * self.geometry.pathlength * 1e3
-                            if sc == 1.0:
-                                ref['atm'][gas] = makeGasXSC(self.wn_start, self.wn_stop, self.nper_wn, conc=ref_conc,
-                                                             species=gas, temp=self.geometry.atm_temp, pres=self.geometry.atm_pres)['Bext'] * self.geometry.pathlength * 1e3
-                            pbar.update()
-                        ref['atm']['OD_calib'][gas] = np.polyfit(scalings, ODs.T, 10)
-
-                    # Otherwise create a temperature calibration (when the temperature varies)
-                    else:
-                        if atm_T_varies:
-                            ODs = np.empty([len(self.model_grid), len(atm_temps)], dtype=float)
-                            for j, t in enumerate(atm_temps):
-                                pbar.set_description('%s @ %i K' % (gas, t))  # Change pbar message
-                                conc = scd2ppm(ref_column, self.geometry.pathlength, temp=t,
-                                               pres=self.geometry.atm_pres)
-                                # Generate OD cross-section
-                                ODs[:, j] = makeGasXSC(self.wn_start, self.wn_stop, self.nper_wn, conc=conc,
-                                                       species=gas, temp=t, pres=self.geometry.atm_pres)[
-                                                'Bext'] * self.geometry.pathlength * 1e3
-                                pbar.update()
-                            ref['atm']['OD_calib'][gas] = np.polyfit(atm_temps, ODs.T, 10)
-                        ref['atm'][gas] = makeGasXSC(self.wn_start, self.wn_stop, self.nper_wn, conc=ref_conc,
-                                                     species=gas, temp=self.geometry.atm_temp,
-                                                     pres=self.geometry.atm_pres)['Bext'] * self.geometry.pathlength * 1e3
-                        if not atm_T_varies:
-                            ref['atm']['OD_calib'][gas] = ref['atm'][gas][np.newaxis, :]
-                            pbar.update()
-                    pbar.set_description('Done!')
-                pbar.close()
+                layerReference('atm', self.params.atmGasList(), self.geometry.pathlength,
+                               self.geometry.atm_temp, self.geometry.atm_pres, atm_temps, atm_T_varies)
                 logger.info('...Done!')
 
                 # ----- 2: Plume gases -----
-                if self.retrieval.fit_gas_temp:
+                if gas_T_varies:
                     logger.info('Plume gases %s in range %i - %i K...' % (self.params.plumeGasList(), gas_temps.min(), gas_temps.max()))
                 else:
                     logger.info('Plume gases %s at %i K...' % (self.params.plumeGasList(), self.geometry.plume_temp))
-                ref['plume']['OD_calib'] = {}
-
-                # Get the list of gases and create a progress bar
-                plume_gases = self.params.plumeGasList()
-                n_gas = len(plume_gases)
-                n_continuum = len([gas for gas in plume_gases if gas in continuum_gases])
-                if self.retrieval.fit_gas_temp:
-                    pbar = tqdm(total=n_continuum * len(scalings) + (n_gas - n_continuum) * len(gas_temps))  # Progress bar
-                else:
-                    pbar = tqdm(total=n_continuum * len(scalings) + n_gas - n_continuum)
-
-                # Loop over gases
-                for i, gas in enumerate(plume_gases):
-
-                    # If gas is both atm and plume, remove suffix
-                    pbar.set_description('%s' % gas)
-
-                    # Assign reference concentration and reference SCD based on plume_thickness
-                    species = speciesOf(gas)      # '<gas>_plume' when the gas is also in the ambient layer
-                    ref_conc = std[species]['conc']
-                    ref_column = ppm2scd(ref_conc, self.geometry.plume_thickness,
-                                                              temp=self.geometry.plume_temp, pres=self.geometry.plume_pres)
-                    ref['plume']['ref_column'][gas] = ref_column
-
-                    # If gas is a continuum gas, use scalings to create a calibration polynomial
-                    if species in continuum_gases:
-                        ODs = np.empty([len(self.model_grid), len(scalings)], dtype=float)
-                        for j, sc in enumerate(scalings):
-                            pbar.set_description('%s: %.1f scaling' % (gas, sc))  # Change pbar message
-                            # Generate OD cross-section
-                            ODs[:, j] = makeGasXSC(self.wn_start, self.wn_stop, self.nper_wn, conc=ref_conc * sc,
-                                                           species=species, temp=self.geometry.plume_temp, pres=self.geometry.plume_pres)['Bext'] * self.geometry.plume_thickness * 1e3
-                            if sc == 1.0:
-                                ref['plume'][gas] = makeGasXSC(self.wn_start, self.wn_stop, self.nper_wn, conc=ref_conc,
-                                                             species=species, temp=self.geometry.plume_temp, pres=self.geometry.plume_pres)['Bext'] * self.geometry.plume_thickness * 1e3
-                            pbar.update()
-
-                        ref['plume']['OD_calib'][gas] = np.polyfit(scalings, ODs.T, 10)
-
-                    # Otherwise create a temperature calibration (when the temperature varies)
-                    else:
-                        if gas_T_varies:
-                            ODs = np.empty([len(self.model_grid), len(gas_temps)], dtype=float)
-                            for j, t in enumerate(gas_temps):
-                                pbar.set_description('%s @ %i K' % (gas, t))  # Change pbar message
-                                conc = scd2ppm(ref_column, self.geometry.plume_thickness, temp=t, pres=self.geometry.plume_pres)
-                                # Generate OD cross-section
-                                ODs[:, j] = makeGasXSC(self.wn_start, self.wn_stop, self.nper_wn, conc=conc,
-                                                       species=species, temp=t, pres=self.geometry.plume_pres)['Bext'] * self.geometry.plume_thickness * 1e3
-                                pbar.update()
-                            ref['plume']['OD_calib'][gas] = np.polyfit(gas_temps, ODs.T, 10)
-                        ref['plume'][gas] = makeGasXSC(self.wn_start, self.wn_stop, self.nper_wn, conc=ref_conc,
-                                                       species=species, temp=self.geometry.plume_temp, pres=self.geometry.plume_pres)['Bext'] * self.geometry.plume_thickness * 1e3
-                        if not gas_T_varies:
-                            ref['plume']['OD_calib'][gas] = ref['plume'][gas][np.newaxis, :]
-
-                    pbar.update()
-                    pbar.set_description('Done!')
-                pbar.close()
+                layerReference('plume', self.params.plumeGasList(), self.geometry.plume_thickness,
+                               self.geometry.plume_temp, self.geometry.plume_pres, gas_temps, gas_T_varies)
                 logger.info('...Done!')
 
                 # --- 3: Plume aerosols ---

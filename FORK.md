@@ -28,6 +28,7 @@ its size.
 | 6 | `headless.py` batch runner, requirements | none (new file) |
 | 7 | Tests | none |
 | 8 | This file | none |
+| 9 | Reference cross-sections from several RFM runs at a time | none (bit-identical); the reference step takes about 1/N of the time on N cores |
 
 ## What is new to set
 
@@ -37,6 +38,7 @@ its size.
 | `*RETRIEVAL` | `fov_min`, `fov_max` | 0.01, 0.15 | bounds of a fitted FOV [rad]; `inf` for no upper bound |
 | environment | `PLUMEIR_HIT` | `./RFM/Hitran/hitran_2020.bin` | RFM line list, an RFM `.bin` or a HITRAN `.par` |
 | environment | `PLUMEIR_HIT_SHA256` | computed | sha256 of that file, so it is not read again |
+| environment | `PLUMEIR_RFM_THREADS` | number of CPUs | RFM runs at a time while the reference cross-sections are made |
 | config | `<gas>_plume` | | name of the plume-layer parameter of a gas that is also an ambient gas |
 
 The minimum full-resolution transmittance of the plume and ambient layers
@@ -64,7 +66,8 @@ needed.
 - `FitResult.params` is the Analyser's own `Parameters` object, not a copy.
   Read the fitted values of one spectrum before fitting the next.
 - RFM's driver and output files are written in the working directory (this
-  folder), so two runs must not use one copy of the code at the same time.
+  folder, and `RFM/work/<n>/` for the runs made at the same time), so two
+  plumeIR runs must not use one copy of the code at the same time.
 
 ## Environment
 

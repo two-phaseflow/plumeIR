@@ -51,7 +51,7 @@ def synthetic_xsc(wn, species, temp):
     return sig
 
 
-def fake_makeGasXSC(wn_start, wn_stop, nper_wn, conc=1.0, temp=298, pres=1013, species='SO2'):
+def fake_makeGasXSC(wn_start, wn_stop, nper_wn, conc=1.0, temp=298, pres=1013, species='SO2', folder=None):
     """Same interface and units as customXSC.makeGasXSC: extinction [m-1] for a
     gas at conc [ppm], temp [K], pres [hPa]."""
     npts = int((wn_stop - wn_start) * nper_wn) + 1
@@ -475,6 +475,7 @@ def test_held_temperature_needs_one_cross_section(synthetic_rfm, tmp_path, monke
         calls.append(k.get('temp'))
         return fake_makeGasXSC(*a, **k)
     monkeypatch.setattr(analysis, 'makeGasXSC', counting)
+    monkeypatch.setattr(customXSC, 'makeGasXSC', counting)      # makeGasXSCs calls it there
     an = make_analyser(str(tmp_path), fit_gas_temp=False)
     ref = an.reference
     assert ref['atm']['OD_calib']['N2O'].shape[0] == 1 and ref['plume']['OD_calib']['SO2'].shape[0] == 1
@@ -485,3 +486,59 @@ def test_held_temperature_needs_one_cross_section(synthetic_rfm, tmp_path, monke
     assert an.reference['plume']['OD_calib']['SO2'].shape[0] == 11      # degree 10 over gas_temps
     assert an.reference['atm']['OD_calib']['N2O'].shape[0] == 1         # ambient temperature held
     assert len(calls) == 2 + 21 + 1
+
+
+# ----------------------------------------------------------------------------------------------------------------------
+# RFM runs at the same time
+# ----------------------------------------------------------------------------------------------------------------------
+def test_parallel_rfm_runs_give_the_same_references(synthetic_rfm, tmp_path, monkeypatch):
+    """The reference cross-sections do not depend on how many RFM runs are
+    started at a time, and every call is made once."""
+    refs = {}
+    for n in ('1', '3'):
+        monkeypatch.setenv('PLUMEIR_RFM_THREADS', n)
+        refs[n] = make_analyser(str(tmp_path / n), fit_gas_temp=True).reference
+    for layer in ('atm', 'plume'):
+        for gas, calib in refs['1'][layer]['OD_calib'].items():
+            assert np.array_equal(calib, refs['3'][layer]['OD_calib'][gas])
+            assert np.array_equal(refs['1'][layer][gas], refs['3'][layer][gas])
+    calls = [dict(conc=float(c), temp=300.0 + c, pres=1000.0, species='SO2') for c in range(7)]
+    one = customXSC.makeGasXSCs(2450.0, 2550.0, 25.0, calls, threads=1)
+    four = customXSC.makeGasXSCs(2450.0, 2550.0, 25.0, calls, threads=4)
+    assert all(np.array_equal(a, b) for a, b in zip(one, four))          # same order
+
+
+def test_rfm_in_its_own_folder(monkeypatch, tmp_path):
+    """With a folder, the driver and the output are there, RFM starts there,
+    and the driver's relative paths point back to this folder."""
+    cwd = os.getcwd()
+    os.chdir(str(tmp_path))
+    try:
+        os.makedirs('RFM/Hitran/subsets')
+        os.makedirs('RFM/output')
+        folder = os.path.join('.', 'RFM', 'work', '0')
+        os.makedirs(folder)
+        monkeypatch.setenv('PLUMEIR_HIT', os.path.join('.', 'RFM', 'Hitran', 'lines.bin'))
+        seen = {}
+
+        class Proc:
+            returncode = 0
+
+        def fake_rfm(args, stdout=None, cwd=None):            # writes what RFM would, in its folder
+            seen['cwd'] = cwd
+            seen['drv'] = open(os.path.join(cwd, 'rfm.drv')).read()
+            with open(os.path.join(cwd, 'rfm.log'), 'w') as f:
+                f.write('R-RFM: Successful completion\n')
+            with open(os.path.join(cwd, 'opt00100.out'), 'w') as f:
+                f.write("!\n!\n!\n 10 2400.0 0.04 2600.0 'Optical Depth'\n" + ' '.join(['2.0'] * 5001) + '\n')
+            return Proc()
+        monkeypatch.setattr(customXSC, 'run', fake_rfm)
+        out = customXSC.makeGasXSC(2400.0, 2600.0, 25.0, conc=1.0, temp=300.0, pres=1000.0, species='SO2',
+                                   folder=folder)
+        assert seen['cwd'] == folder
+        assert 'OUTDIR = ./\n' in seen['drv']
+        assert '../../Hitran/lines.bin' in seen['drv']                 # relative to the run folder
+        assert np.allclose(out['Bext'], 0.02)
+        assert not os.path.exists('rfm.drv') and not os.listdir('RFM/output')   # nothing written here
+    finally:
+        os.chdir(cwd)

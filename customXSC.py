@@ -35,6 +35,58 @@ def gauss(x, mu, sig):
     return np.exp(-np.power(x - mu, 2.) / (2 * np.power(sig, 2.)))
 # --------------------------------------------------------
 
+def rfm_threads():
+    """How many RFM runs makeGasXSCs starts at a time: the environment variable
+    PLUMEIR_RFM_THREADS, else the number of CPUs."""
+    n = os.environ.get('PLUMEIR_RFM_THREADS')
+    return max(1, int(n)) if n else max(1, os.cpu_count() or 1)
+
+
+def makeGasXSCs(wn_start, wn_stop, nper_wn, calls, threads=None, pbar=None):
+    """
+    makeGasXSC for each of `calls` (dicts of its keyword arguments: conc, temp,
+    pres, species), up to `threads` (default rfm_threads()) RFM runs at a time.
+    Each run has its own folder ./RFM/work/<n>/ for the driver and the output,
+    so runs at the same time do not overwrite each other's files. RFM is a
+    separate process, so threads are enough and this works the same on every
+    platform. With one thread the calls run one after another in this folder,
+    as makeGasXSC does. The results do not depend on the number of threads.
+
+    :return: list of Bext arrays [m^-1], in the order of calls
+    """
+    threads = min(threads or rfm_threads(), len(calls))
+    if threads <= 1:
+        out = []
+        for c in calls:
+            out.append(makeGasXSC(wn_start, wn_stop, nper_wn, **c)['Bext'])
+            if pbar is not None:
+                pbar.update()
+        return out
+
+    import queue
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+    folders = queue.Queue()
+    for k in range(threads):
+        d = os.path.join('.', 'RFM', 'work', '%d' % k)
+        os.makedirs(d, exist_ok=True)
+        folders.put(d)
+
+    def one(c):
+        d = folders.get()
+        try:
+            return makeGasXSC(wn_start, wn_stop, nper_wn, folder=d, **c)['Bext']
+        finally:
+            folders.put(d)
+
+    with ThreadPoolExecutor(max_workers=threads) as pool:
+        futures = [pool.submit(one, c) for c in calls]
+        for f in as_completed(futures):
+            f.result()                  # an RFM failure ends the batch here
+            if pbar is not None:
+                pbar.update()
+        return [f.result() for f in futures]
+
+
 # ======================================================================================================================
 #                                    Create a Particle Size Distribution
 # ======================================================================================================================
@@ -123,7 +175,7 @@ def makePSD(mean=1.0, sigma=1.5, n=50, fname=None):
 # ======================================================================================================================
 #                                   Make custom cross-sections for gases
 # ======================================================================================================================
-def makeGasXSC(wn_start, wn_stop, nper_wn, conc=1.0, temp=298, pres=1013, species=None):
+def makeGasXSC(wn_start, wn_stop, nper_wn, conc=1.0, temp=298, pres=1013, species=None, folder=None):
     """
     Use this function to make cross-sections for gases not in the Hitran database. Each gas is manually added in the
         ./xsec/ folder as a JCAMP-JDX file (.jdx) taken from the NIST website. Reference experiment environemental data
@@ -138,6 +190,8 @@ def makeGasXSC(wn_start, wn_stop, nper_wn, conc=1.0, temp=298, pres=1013, specie
     :param temp:        Temperature                                                             [K]
     :param pres:        Pressure                                                                [mbar]
     :param species:     Gas formula (case insensitive)                                          String
+    :param folder:      folder RFM runs in, with its driver and output (makeGasXSCs); None: this
+                        folder and ./RFM/output/
     :return: Dictionary with structure:
                 ['wn']:             Wavenumber x-axis                                           [cm^-1]
                 ['Bext']:           Extinction coefficients                                     [m^-1]
@@ -178,13 +232,15 @@ def makeGasXSC(wn_start, wn_stop, nper_wn, conc=1.0, temp=298, pres=1013, specie
         # Write RFM driver and run. RFM always writes the same output file name
         # for a homogeneous path, so a failed run would leave the previous call's
         # optical depth in place: remove it first and check the run.
-        out_file = './RFM/output/opt00100.out'
-        if os.path.exists(out_file):
-            os.remove(out_file)
+        out_file = './RFM/output/opt00100.out' if folder is None else os.path.join(folder, 'opt00100.out')
+        log_file = 'rfm.log' if folder is None else os.path.join(folder, 'rfm.log')
+        for f in (out_file, log_file):
+            if os.path.exists(f):
+                os.remove(f)
         writeRFMdrv(wn_start, wn_stop, nper_wn, layer=True, pathlength=0.1, gas=species, conc={species: conc},
-                    temp=temp, pres=pres, out="OPT")
-        proc = run([rfm_executable()], stdout=DEVNULL)
-        log = open('rfm.log').read() if os.path.exists('rfm.log') else ''
+                    temp=temp, pres=pres, out="OPT", folder=folder)
+        proc = run([rfm_executable()], stdout=DEVNULL, cwd=folder)
+        log = open(log_file).read() if os.path.exists(log_file) else ''
         if proc.returncode != 0 or 'Successful completion' not in log or not os.path.exists(out_file):
             raise RuntimeError('RFM failed for %s %.0f-%.0f cm-1 (T=%.1f K, P=%.1f hPa); end of rfm.log:\n%s'
                                % (species, wn_start, wn_stop, temp, pres, log[-2000:]))

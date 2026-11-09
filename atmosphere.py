@@ -10,6 +10,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 import warnings
 import os
+import threading
 from unitConversion import *
 from datetime import datetime
 warnings.filterwarnings("ignore")
@@ -918,7 +919,7 @@ def plotAtm(atm, title='RFM atmosphere'):
 
 def writeRFMdrv(wn_start, wn_stop, npwer_wn, height=0.0, elev=90.0, atm="./atm/mls.atm", levels=[],
                 gas="H2O", layer=False, conc={'H2O': 18000}, pres=1013, temp=298, out="RAD BBT OPT TRA",
-                pathlength=0.1, CTM=True, MIX=True, PRF=False):
+                pathlength=0.1, CTM=True, MIX=True, PRF=False, folder=None):
     """
     This function writes the RFM driver for a slant path looking upward into the atmosphere
 
@@ -937,10 +938,20 @@ def writeRFMdrv(wn_start, wn_stop, npwer_wn, height=0.0, elev=90.0, atm="./atm/m
                     Default is "./atm/mls.atm", a standard atmosphere for mid latitude summer
     :param levels: Array with the levels for intermediate output                                    [km]
 
+    :param folder: folder for the driver and the output files, so that several
+                   RFM runs can take place at once (RFM is then started in it); the
+                   relative paths of the driver are written relative to it. None:
+                   this folder and ./RFM/output/, as before
     :return: nothing
     """
+    def here(path):
+        # a path as the driver needs it when RFM runs in `folder`
+        if folder is None or os.path.isabs(path):
+            return path
+        return os.path.relpath(os.path.abspath(path), os.path.abspath(folder)).replace(os.sep, "/")
+
     # Open file
-    drv = open(r"rfm.drv", "w")
+    drv = open(os.path.join(folder, "rfm.drv") if folder is not None else r"rfm.drv", "w")
 
     # WRite header
     drv.write("! RFM driver table for radiance calculation")
@@ -1039,11 +1050,11 @@ def writeRFMdrv(wn_start, wn_stop, npwer_wn, height=0.0, elev=90.0, atm="./atm/m
     # per-window per-gas subsets); default unchanged
     hit = os.environ.get("PLUMEIR_HIT")
     if hit and hit.lower().endswith(".par"):
-        drv.write(_par_subset(hit, wn_start, wn_stop, gas))
+        drv.write(here(_par_subset(hit, wn_start, wn_stop, gas)))
     elif hit:
-        drv.write(hit)
+        drv.write(here(hit))
     else:
-        drv.write("./RFM/Hitran/hitran_2020.bin")
+        drv.write(here("./RFM/Hitran/hitran_2020.bin"))
     drv.write("\n\n")
 
     # # ---------------------- LEV SECTION  -----------------------
@@ -1058,10 +1069,10 @@ def writeRFMdrv(wn_start, wn_stop, npwer_wn, height=0.0, elev=90.0, atm="./atm/m
     # ---------------------- OUT SECTION  -----------------------
     # Define output names
     drv.write("*OUT\n")
-    drv.write("OUTDIR = ./RFM/output/\n")
+    drv.write("OUTDIR = %s\n" % ("./RFM/output/" if folder is None else "./"))
     for item in out.split():
         drv.write("%sFIL = %s*.out\n" % (item, item.lower()))
-    drv.write("PRFFIL = ./atm/prf.atm\n")
+    drv.write("PRFFIL = %s\n" % here("./atm/prf.atm"))
     drv.write("\n")
 
     # # ---------------------- XSC SECTION  -----------------------
@@ -1439,6 +1450,14 @@ def _par_subset(par, wn_start, wn_stop, gas, margin=50.0):
     cut-off. Cached in ./RFM/Hitran/subsets/ under the line list's sha256
     (PLUMEIR_HIT_SHA256, set by the driver), so a changed file never reuses
     old subsets."""
+    with _SUBSET_LOCK:              # RFM drivers may be written from several threads
+        return _par_subset_locked(par, wn_start, wn_stop, gas, margin)
+
+
+_SUBSET_LOCK = threading.Lock()
+
+
+def _par_subset_locked(par, wn_start, wn_stop, gas, margin):
     import hashlib
     lo, hi = wn_start - margin, wn_stop + margin
     tag = os.environ.get("PLUMEIR_HIT_SHA256")
