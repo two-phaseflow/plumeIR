@@ -229,6 +229,12 @@ def lineListId():
     return "sha256:%s" % tag
 
 
+def speciesOf(name):
+    """RFM species of a parameter: a gas that is in both layers has its
+    plume-layer parameter named '<gas>_plume' (Parameters.extract)."""
+    return name[:-6] if name.endswith('_plume') else name
+
+
 def codeId():
     """sha256 (first 16 hex digits) of the source files that generate and read the
     cross-sections and of the RFM executable that computes them, so that a
@@ -609,22 +615,23 @@ class Analyser(object):
                     pbar.set_description('%s' % gas)
 
                     # Assign reference concentration and reference SCD based on plume_thickness
-                    ref_conc = std[gas]['conc']
+                    species = speciesOf(gas)      # '<gas>_plume' when the gas is also in the ambient layer
+                    ref_conc = std[species]['conc']
                     ref_column = ppm2scd(ref_conc, self.geometry.plume_thickness,
                                                               temp=self.geometry.plume_temp, pres=self.geometry.plume_pres)
                     ref['plume']['ref_column'][gas] = ref_column
 
                     # If gas is a continuum gas, use scalings to create a calibration polynomial
-                    if gas in continuum_gases:
+                    if species in continuum_gases:
                         ODs = np.empty([len(self.model_grid), len(scalings)], dtype=float)
                         for j, sc in enumerate(scalings):
                             pbar.set_description('%s: %.1f scaling' % (gas, sc))  # Change pbar message
                             # Generate OD cross-section
                             ODs[:, j] = makeGasXSC(self.wn_start, self.wn_stop, self.nper_wn, conc=ref_conc * sc,
-                                                           species=gas, temp=self.geometry.plume_temp, pres=self.geometry.plume_pres)['Bext'] * self.geometry.plume_thickness * 1e3
+                                                           species=species, temp=self.geometry.plume_temp, pres=self.geometry.plume_pres)['Bext'] * self.geometry.plume_thickness * 1e3
                             if sc == 1.0:
                                 ref['plume'][gas] = makeGasXSC(self.wn_start, self.wn_stop, self.nper_wn, conc=ref_conc,
-                                                             species=gas, temp=self.geometry.plume_temp, pres=self.geometry.plume_pres)['Bext'] * self.geometry.plume_thickness * 1e3
+                                                             species=species, temp=self.geometry.plume_temp, pres=self.geometry.plume_pres)['Bext'] * self.geometry.plume_thickness * 1e3
                             pbar.update()
 
                         ref['plume']['OD_calib'][gas] = np.polyfit(scalings, ODs.T, 10)
@@ -637,12 +644,12 @@ class Analyser(object):
                             conc = scd2ppm(ref_column, self.geometry.plume_thickness, temp=t, pres=self.geometry.plume_pres)
                             # Generate OD cross-section
                             ODs[:, j] = makeGasXSC(self.wn_start, self.wn_stop, self.nper_wn, conc=conc,
-                                                   species=gas, temp=t, pres=self.geometry.plume_pres)['Bext'] * self.geometry.plume_thickness * 1e3
+                                                   species=species, temp=t, pres=self.geometry.plume_pres)['Bext'] * self.geometry.plume_thickness * 1e3
                             pbar.update()
 
                         ref['plume']['OD_calib'][gas] = np.polyfit(gas_temps, ODs.T, 10)
                         ref['plume'][gas] = makeGasXSC(self.wn_start, self.wn_stop, self.nper_wn, conc=ref_conc,
-                                                       species=gas, temp=self.geometry.plume_temp, pres=self.geometry.plume_pres)['Bext'] * self.geometry.plume_thickness * 1e3
+                                                       species=species, temp=self.geometry.plume_temp, pres=self.geometry.plume_pres)['Bext'] * self.geometry.plume_thickness * 1e3
 
                     pbar.update()
                     pbar.set_description('Done!')
@@ -1935,8 +1942,9 @@ class Analyser(object):
         OD_plumeE = 0
         plume_gases = [params[n].name for n in p if params[n].plume_gas]
         for gas in plume_gases:
-            if gas in continuum_gases:
+            if speciesOf(gas) in continuum_gases:
                 OD_gas = np.polyval(self.reference['plume']['OD_calib'][gas], p[gas])
+                OD_gasE = OD_gas            # calibrated in amount, not temperature
             else:
                 OD_gas = p[gas] * np.polyval(self.reference['plume']['OD_calib'][gas], p['gas_temp'])
                 OD_gasE = p[gas] * np.polyval(self.reference['plume']['OD_calib'][gas], p['gasE_temp'])
@@ -1955,6 +1963,15 @@ class Analyser(object):
         T_atm = np.exp(-OD_atm)
         T_plume = np.exp(-OD_plume)
         E_plume = 1 - np.exp(-OD_plumeE)
+        # Saturation diagnostics at full resolution (before the ILS fills the line
+        # cores in), over the fit window only (the model grid extends model_padding
+        # beyond it): kept on the Analyser so a caller can read them after a fit
+        inside = (self.model_grid >= self.fit_window[0]) & (self.model_grid <= self.fit_window[1])
+
+        def window_min(T):
+            return float(np.min(T[inside])) if np.ndim(T) and np.shape(T) == inside.shape else float(np.min(T))
+        self.last_plume_transmittance_min = window_min(T_plume)
+        self.last_atm_transmittance_min = window_min(T_atm)
 
         # Compute model spectrum at full resolution
         if self.no_gas:

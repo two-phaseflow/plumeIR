@@ -119,10 +119,14 @@ class Parameters(OrderedDict):
                     self.add(species, value=1.0, atm_gas=True, target=species in targets,
                                min=0.0, max=np.inf, vary=True)
 
-        # Add the plume gas parameters
+        # Add the plume gas parameters. A gas that is also an atmospheric gas gets
+        # the parameter name '<gas>_plume' (Parameters is keyed by name, so the
+        # same name would silently replace the ambient entry); analysis.speciesOf
+        # maps it back to the RFM species.
         for species in plume_gases:
             if species is not None:
-                self.add(species, value=0.01, plume_gas=True, target=species in targets,
+                name = species + '_plume' if species in atm_gases else species
+                self.add(name, value=0.01, plume_gas=True, target=species in targets or name in targets,
                            min=0.0, max=np.inf, vary=True)
 
         # Add the aerosol parameters
