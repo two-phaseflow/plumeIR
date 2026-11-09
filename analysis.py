@@ -454,6 +454,15 @@ class Analyser(object):
         # ---------------------------------------------------------------------
         if self.type == 'layer':
 
+            # A layer temperature that is neither fitted nor imposed spectrum by
+            # spectrum (force_param, seed_param) needs the cross-sections at that
+            # temperature only, not a calibration over the whole range: exact, and
+            # 21 times fewer RFM runs per gas. They are stored as a polynomial of
+            # degree 0, so the forward model is unchanged.
+            atm_T_varies = bool(self.params['atm_temp'].vary or 'atm_temp' in self.from_df)
+            gas_T_varies = bool(self.params['gas_temp'].vary or 'gas_temp' in self.from_df
+                                or self.params['gasE_temp'].vary or 'gasE_temp' in self.from_df)
+
             # Generate header for looking up references
             # Everything the cross-sections depend on, so that a saved reference is
             # reused only when it would be recomputed identically: T and P to 0.01,
@@ -463,8 +472,8 @@ class Analyser(object):
                      "Atmospheric temperature: %.2f K\n" \
                      "Atmospheric pressure: %.2f mbar\n" \
                      "Plume temperature: %.2f K\n" \
-                     "Gas Temp range: %i-%i K\n" \
-                     "Atm Temp range: %i-%i K\n" \
+                     "Gas Temp range: %i-%i K, calibrated: %s\n" \
+                     "Atm Temp range: %i-%i K, calibrated: %s\n" \
                      "Plume pressure: %.2f mbar\n" \
                      "Fit window: %i - %i cm^-1\n" \
                      "Spectral resolution: %.3f cm^-1\n" \
@@ -478,8 +487,8 @@ class Analyser(object):
                         self.geometry.atm_temp,
                         self.geometry.atm_pres,
                         self.geometry.plume_temp,
-                        gas_temps.min(), gas_temps.max(),
-                        atm_temps.min(), atm_temps.max(),
+                        gas_temps.min(), gas_temps.max(), gas_T_varies,
+                        atm_temps.min(), atm_temps.max(), atm_T_varies,
                         self.geometry.plume_pres,
                         self.wn_start, self.wn_stop,
                         self.model_spacing,
@@ -571,23 +580,26 @@ class Analyser(object):
                             pbar.update()
                         ref['atm']['OD_calib'][gas] = np.polyfit(scalings, ODs.T, 10)
 
-                    # Otherwise create a temperature calibration
+                    # Otherwise create a temperature calibration (when the temperature varies)
                     else:
-                        ODs = np.empty([len(self.model_grid), len(atm_temps)], dtype=float)
-                        for j, t in enumerate(atm_temps):
-                            pbar.set_description('%s @ %i K' % (gas, t))  # Change pbar message
-                            conc = scd2ppm(ref_column, self.geometry.pathlength, temp=t,
-                                           pres=self.geometry.atm_pres)
-                            # Generate OD cross-section
-                            ODs[:, j] = makeGasXSC(self.wn_start, self.wn_stop, self.nper_wn, conc=conc,
-                                                   species=gas, temp=t, pres=self.geometry.atm_pres)[
-                                            'Bext'] * self.geometry.pathlength * 1e3
-                            pbar.update()
-
-                        ref['atm']['OD_calib'][gas] = np.polyfit(atm_temps, ODs.T, 10)
+                        if atm_T_varies:
+                            ODs = np.empty([len(self.model_grid), len(atm_temps)], dtype=float)
+                            for j, t in enumerate(atm_temps):
+                                pbar.set_description('%s @ %i K' % (gas, t))  # Change pbar message
+                                conc = scd2ppm(ref_column, self.geometry.pathlength, temp=t,
+                                               pres=self.geometry.atm_pres)
+                                # Generate OD cross-section
+                                ODs[:, j] = makeGasXSC(self.wn_start, self.wn_stop, self.nper_wn, conc=conc,
+                                                       species=gas, temp=t, pres=self.geometry.atm_pres)[
+                                                'Bext'] * self.geometry.pathlength * 1e3
+                                pbar.update()
+                            ref['atm']['OD_calib'][gas] = np.polyfit(atm_temps, ODs.T, 10)
                         ref['atm'][gas] = makeGasXSC(self.wn_start, self.wn_stop, self.nper_wn, conc=ref_conc,
                                                      species=gas, temp=self.geometry.atm_temp,
                                                      pres=self.geometry.atm_pres)['Bext'] * self.geometry.pathlength * 1e3
+                        if not atm_T_varies:
+                            ref['atm']['OD_calib'][gas] = ref['atm'][gas][np.newaxis, :]
+                            pbar.update()
                     pbar.set_description('Done!')
                 pbar.close()
                 logger.info('...Done!')
@@ -636,20 +648,22 @@ class Analyser(object):
 
                         ref['plume']['OD_calib'][gas] = np.polyfit(scalings, ODs.T, 10)
 
-                    # Otherwise create a temperature calibration
+                    # Otherwise create a temperature calibration (when the temperature varies)
                     else:
-                        ODs = np.empty([len(self.model_grid), len(gas_temps)], dtype=float)
-                        for j, t in enumerate(gas_temps):
-                            pbar.set_description('%s @ %i K' % (gas, t))  # Change pbar message
-                            conc = scd2ppm(ref_column, self.geometry.plume_thickness, temp=t, pres=self.geometry.plume_pres)
-                            # Generate OD cross-section
-                            ODs[:, j] = makeGasXSC(self.wn_start, self.wn_stop, self.nper_wn, conc=conc,
-                                                   species=species, temp=t, pres=self.geometry.plume_pres)['Bext'] * self.geometry.plume_thickness * 1e3
-                            pbar.update()
-
-                        ref['plume']['OD_calib'][gas] = np.polyfit(gas_temps, ODs.T, 10)
+                        if gas_T_varies:
+                            ODs = np.empty([len(self.model_grid), len(gas_temps)], dtype=float)
+                            for j, t in enumerate(gas_temps):
+                                pbar.set_description('%s @ %i K' % (gas, t))  # Change pbar message
+                                conc = scd2ppm(ref_column, self.geometry.plume_thickness, temp=t, pres=self.geometry.plume_pres)
+                                # Generate OD cross-section
+                                ODs[:, j] = makeGasXSC(self.wn_start, self.wn_stop, self.nper_wn, conc=conc,
+                                                       species=species, temp=t, pres=self.geometry.plume_pres)['Bext'] * self.geometry.plume_thickness * 1e3
+                                pbar.update()
+                            ref['plume']['OD_calib'][gas] = np.polyfit(gas_temps, ODs.T, 10)
                         ref['plume'][gas] = makeGasXSC(self.wn_start, self.wn_stop, self.nper_wn, conc=ref_conc,
                                                        species=species, temp=self.geometry.plume_temp, pres=self.geometry.plume_pres)['Bext'] * self.geometry.plume_thickness * 1e3
+                        if not gas_T_varies:
+                            ref['plume']['OD_calib'][gas] = ref['plume'][gas][np.newaxis, :]
 
                     pbar.update()
                     pbar.set_description('Done!')
