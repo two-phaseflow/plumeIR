@@ -7,6 +7,7 @@ This module contains functions to create optical depth cross-sections:
 
 """
 import numpy as np
+import os
 import pandas as pd
 import scipy.stats as stats
 import pickle
@@ -334,7 +335,7 @@ def makeAerosolXSC(wn_start, wn_stop, nper_wn, size, mass_conc, psd=False, sigma
         if species == 'WATER' or species == 'ICE':
             density = 1000
         elif species == 'H2SO4':
-            acid_frac = int(fname.split('/')[-1].split('_')[1]) / 100
+            acid_frac = int(os.path.basename(fname).split('_')[1]) / 100
             density = 1830 * acid_frac + 1000 * (1 - acid_frac)
         elif species == 'ASH':
             density = 2600

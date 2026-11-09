@@ -137,7 +137,8 @@ class Parameters(OrderedDict):
         self.add('fov', value=retrieval.fov, min=0.01, max=0.15, vary=retrieval.fit_fov, target='fov' in targets)
         self.add('max_opd', value=retrieval.max_opd, min=retrieval.max_opd * 0.5, max=retrieval.max_opd * 1.2,
                  vary=retrieval.fit_max_opd, target='max_opd' in targets)
-        self.add('nu_shift', value=retrieval.nu_shift, min=-1.0, max=+1.0, vary=retrieval.fit_shift)
+        self.add('nu_shift', value=retrieval.nu_shift, min=-retrieval.nu_shift_max, max=+retrieval.nu_shift_max,
+                 vary=retrieval.fit_shift)
         self.add('offset', value=retrieval.offset, vary=retrieval.fit_offset)
 
         # Add the special parameters for layer fits
@@ -531,6 +532,7 @@ class Retrieval(object):
                  apod_type='NB-medium',
                  fit_shift=True,
                  nu_shift=0,
+                 nu_shift_max=1.0,
                  fit_offset=False,
                  offset=0):
         """ Initialise the retrieval """
@@ -551,6 +553,7 @@ class Retrieval(object):
         self.apod_type = apod_type
         self.fit_shift = fit_shift
         self.nu_shift = float(nu_shift)
+        self.nu_shift_max = float(nu_shift_max)
         self.fit_offset = fit_offset
         self.offset = float(offset)
         # Aerosols

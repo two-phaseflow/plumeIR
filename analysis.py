@@ -255,6 +255,11 @@ class Analyser(object):
         else:
             self.seed_param = []
 
+        # Initial guess and bounds of the fitted parameters only, built after
+        # force_param/seed_param have set which parameters vary
+        self.p0 = self.params.fittedValuesList()
+        self.bounds = self.params.bounds()
+
         # Find the dataframe with the previous fit results and check that it can be used
         self.from_df = self.force_param + self.seed_param
         if len(self.from_df) > 0:
@@ -264,7 +269,7 @@ class Analyser(object):
                                  % self.retrieval.df_dir)
             elif len(flist) == 1:
                 df = pd.read_csv(flist[0])
-                if all([('%s_val' % x in df.columns for x in self.from_df) or (y in df.columns for y in self.from_df)]):
+                if all(('%s_val' % x in df.columns) or (x in df.columns) for x in self.from_df):
                     self.df_dir = df
                 else:
                     raise IOError('Supplied fitResult does not contain all parameters')
@@ -1773,7 +1778,7 @@ class Analyser(object):
 
         # Use parameters from previous fit?
         if len(self.from_df) > 0:
-            i = [i for i, x in enumerate(self.df_dir['File']) if x == spectrum.fname.split('/')[-1]][0]
+            i = [i for i, x in enumerate(self.df_dir['File']) if x == os.path.basename(spectrum.fname)][0]
             for p in self.from_df:
                 if p in self.params:
                     if p in possible_gases:

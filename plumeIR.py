@@ -215,7 +215,7 @@ for i, fname in enumerate(config['DATA']['spec_list']):
     # ---------------------------------------------------------------------
     # Initiate empty lists
     results = [None] * n_fits
-    row_all = [fname.split('/')[-1], dtime]  # Summary row
+    row_all = [os.path.basename(fname), dtime]  # Summary row
 
     # --- Loop through fits ---
     for n in range(n_fits):
@@ -227,7 +227,7 @@ for i, fname in enumerate(config['DATA']['spec_list']):
                        use_bounds=retrieval.use_bounds)
 
         # --- 2: Read out parameters ---
-        row_n = [fname.split('/')[-1], dtime]   # Individual row
+        row_n = [os.path.basename(fname), dtime]   # Individual row
 
         for name, p in results[n].params.items():
 

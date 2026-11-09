@@ -45,7 +45,7 @@ def readConfig(fname='./plumeIRconfig.txt'):
         # Assign parameters to active section
         else:
             # Extract key value pairs
-            key, value = line.split(':')
+            key, value = line.split(':', 1)
             key = key.strip()
             value = value.strip()
 
@@ -200,16 +200,16 @@ def initialiseFit(config_file='./plumeIRconfig.txt', force_ref=False):
         flist = [f for f in flist if f.split('.')[-1] in config['DATA']['filter_ext']]
     
     # Look for clear and blackbody spectra and remove from main list
-    bbc_list = [f for f in flist if any([s in f for s in ['bbc', 'BBC']])]
-    bbh_list = [f for f in flist if any([s in f for s in ['bbh', 'BBH']])]
-    clear_list = [f for f in flist if any([s in f for s in ['clear', 'sky']])]
-    self_list = [f for f in flist if any([s in f for s in ['self']])]
+    bbc_list = [f for f in flist if any([s in os.path.basename(f) for s in ['bbc', 'BBC']])]
+    bbh_list = [f for f in flist if any([s in os.path.basename(f) for s in ['bbh', 'BBH']])]
+    clear_list = [f for f in flist if any([s in os.path.basename(f) for s in ['clear', 'sky']])]
+    self_list = [f for f in flist if any([s in os.path.basename(f) for s in ['self']])]
     
     flist = [f for f in flist if not any([f in L for L in [bbc_list, bbh_list, clear_list, self_list]])]
 
     # Only keep files with certain filenames?
     if config['DATA']['filter_files']:
-        flist = [f for f in flist if config['DATA']['filter_string'] in f]
+        flist = [f for f in flist if config['DATA']['filter_string'] in os.path.basename(f)]
 
     # Sort by time
     n_spec = len(flist)
@@ -248,7 +248,7 @@ def initialiseFit(config_file='./plumeIRconfig.txt', force_ref=False):
         if not os.path.exists(corrupted_dir):
             os.mkdir(corrupted_dir)
         for fname in corrupt_list:
-            os.rename(fname, corrupted_dir + '/' + fname.split('/')[-1])
+            os.rename(fname, corrupted_dir + '/' + os.path.basename(fname))
 
         # Rename
         pbar = tqdm(total=n_spec)
@@ -257,7 +257,7 @@ def initialiseFit(config_file='./plumeIRconfig.txt', force_ref=False):
             ext = fname.split('.')[-1]
             if ext not in midac_extensions:
                 ext = '0'
-            old = fname.split('/')[-1]
+            old = os.path.basename(fname)
             dir = fname.replace(old, '')
             root = ''.join([i for i in old.split('.')[0] if not i.isdigit()])
             datestr = datetime.strftime(datetime.fromtimestamp(times[i]), '%Y_%m_%d_%H%M_%S_%f')

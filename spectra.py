@@ -7,7 +7,7 @@ Defines the object class Spectrum.
 
 """
 from brukeropusreader import read_file as read_opus
-from pyspectra.readers import read_spc
+import spc
 from datetime import datetime
 from scipy.interpolate import griddata
 import matplotlib.pyplot as plt
@@ -54,7 +54,7 @@ def read_spectrum(fname):
     :return: Spectrum object
     """
 
-    ext = fname.split('/')[-1].split('.')[-1]
+    ext = os.path.basename(fname).split('.')[-1]
     if ext in ['spc', 'sbm', 'ifg', 'sb', 'abs']:
             spec = read_midac(fname)
     else:
@@ -74,7 +74,7 @@ def read_midac(fname):
 
     # Read the spectrum
     with silentCall():
-        spec = read_spc.spc.File(fname)
+        spec = spc.File(fname)
 
     # If file is empty, raise error
     if spec is None:
@@ -91,6 +91,14 @@ def read_midac(fname):
         spec_type = 'abs'
     elif spec.ylabel == 'Emission':
         spec_type = 'em'
+    else:
+        # Newer Midac/AutoQuant files label a single-beam spectrum 'Arbitrary or
+        # Single Beam with Valley Peaks'; fall back to the file name suffix
+        # (_sbm, _ifg, _tra, _abs) before giving up
+        stem = os.path.splitext(os.path.basename(fname))[0].lower()
+        spec_type = next((t for t in ('sbm', 'ifg', 'tra', 'abs') if stem.endswith('_' + t) or stem.endswith(t)), None)
+        if spec_type is None:
+            raise ValueError('Unknown spectrum type (ylabel %r) in %s' % (spec.ylabel, fname))
 
     # Extract acquisition time
     try:
@@ -167,7 +175,7 @@ def findDateinName(fname):
     """
 
     # First split the file name to get rid of the directory and extension
-    string = fname.split('/')[-1].split('.')[0]
+    string = os.path.basename(fname).split('.')[0]
 
     # Extract all numbers and
     numbers = ''
