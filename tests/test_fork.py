@@ -37,17 +37,24 @@ LINES = {   # species -> (centres [cm-1], strengths [cm2 at 296 K], lower-state 
     'SO2': ([2492.0, 2500.0, 2508.0, 2515.0, 2522.0], [2e-19, 4e-19, 3e-19, 2e-19, 1e-19], [50, 150, 400, 900, 1500]),
     'N2O': ([2480.0, 2530.0], [5e-19, 3e-19], [100, 300]),
     'CH4': ([2470.0, 2545.0], [1e-19, 1e-19], [200, 200]),
+    'H2O': ([2475.0, 2498.0, 2537.0], [3e-21, 2e-21, 4e-21], [100, 600, 1500]),
 }
 
 
-def synthetic_xsc(wn, species, temp):
+def synthetic_xsc(wn, species, temp, vmr=0.0):
     """Absorption cross-section [cm2 molec-1] of Gaussian lines (HWHM 0.1 cm-1)
-    with a Boltzmann temperature dependence of the line strengths."""
+    with a Boltzmann temperature dependence of the line strengths. H2O, a
+    continuum gas, is not linear in its amount: its lines widen with its
+    mixing ratio (self-broadening) and it has a self-continuum proportional to
+    it."""
     c2 = 1.4388
     sig = np.zeros_like(wn)
+    width = 0.1 * (1 + 5 * vmr) if species == 'H2O' else 0.1
     for nu0, s0, elow in zip(*LINES[species]):
         s = s0 * (296.0 / temp) * np.exp(-c2 * elow * (1 / temp - 1 / 296.0))
-        sig += s * np.exp(-0.5 * ((wn - nu0) / 0.1) ** 2) / (0.1 * np.sqrt(2 * np.pi))
+        sig += s * np.exp(-0.5 * ((wn - nu0) / width) ** 2) / (width * np.sqrt(2 * np.pi))
+    if species == 'H2O':
+        sig += 2e-23 * vmr * (296.0 / temp) ** 2
     return sig
 
 
@@ -57,7 +64,7 @@ def fake_makeGasXSC(wn_start, wn_stop, nper_wn, conc=1.0, temp=298, pres=1013, s
     npts = int((wn_stop - wn_start) * nper_wn) + 1
     wn = np.linspace(wn_start, wn_stop, npts)
     n = 7.2429e18 * pres / temp * conc * 1e-6          # molec cm-3
-    return {'wn': wn, 'Bext': n * synthetic_xsc(wn, species, temp) * 100.0, 'conc': conc}
+    return {'wn': wn, 'Bext': n * synthetic_xsc(wn, species, temp, vmr=conc * 1e-6) * 100.0, 'conc': conc}
 
 
 @pytest.fixture
@@ -542,3 +549,47 @@ def test_rfm_in_its_own_folder(monkeypatch, tmp_path):
         assert not os.path.exists('rfm.drv') and not os.listdir('RFM/output')   # nothing written here
     finally:
         os.chdir(cwd)
+
+
+# ----------------------------------------------------------------------------------------------------------------------
+# A continuum gas (H2O) in a layer whose temperature varies
+# ----------------------------------------------------------------------------------------------------------------------
+def make_h2o_analyser(tmpdir, fit_atm_temp):
+    geometry = Geometry('layer', pathlength=0.6, atm_temp=281.0, atm_pres=1000.0, plume_temp=450.0,
+                        plume_pres=1000.0, plume_thickness=0.05)
+    retrieval = Retrieval(type='layer', update_params=False, use_bounds=True, fit_gas_temp=False,
+                          fit_atm_temp=fit_atm_temp, subtract_self=False, no_gas=False, fit_fov=False, fov=0.06,
+                          fit_max_opd=False, max_opd=2.0, apod_type='Triangular', fit_shift=True, nu_shift=0.0,
+                          model_gas_emission=False, fit_source_temp=False)
+    fit = {'polydeg': 2, 'atm_gases': ['H2O', 'N2O'], 'plume_gases': ['SO2'], 'plume_aero': None,
+           'targets': ['H2O', 'N2O', 'SO2'], 'fix_atm_gas': None,
+           'fit_gas_temp': False, 'fit_atm_temp': fit_atm_temp, 'model_gas_emission': False}
+    params = Parameters()
+    params.extract(fit, retrieval, geometry)
+    data_dir = os.path.join(tmpdir, 'data') + '/'
+    os.makedirs(data_dir, exist_ok=True)
+    return Analyser(params, geometry, [2450.0, 2550.0], retrieval=retrieval, name='FIT1', data_dir=data_dir,
+                    force_ref=True)
+
+
+def test_continuum_gas_follows_a_varying_layer_temperature(synthetic_rfm, tmp_path):
+    """plumeIR calibrated a continuum gas in amount at the configured
+    temperature only, so a fitted or imposed temperature of its layer did not
+    reach it. With the temperature varying it is calibrated in amount at each
+    temperature and then in temperature; held, as before."""
+    held = make_h2o_analyser(str(tmp_path / 'held'), fit_atm_temp=False)
+    assert np.ndim(held.reference['atm']['OD_calib']['H2O']) == 2            # amount only, as before
+    an = make_h2o_analyser(str(tmp_path / 'varies'), fit_atm_temp=True)
+    calib = an.reference['atm']['OD_calib']['H2O']
+    assert np.ndim(calib) == 3
+    ref_column = an.reference['atm']['ref_column']['H2O']
+    wn, L = an.model_grid, 0.6e5                                           # path [cm]
+    for amount, T in ((0.3, 281.0), (0.5, 300.0), (1.5, 350.0), (3.0, 250.0)):
+        n = amount * ref_column / L                                       # molec cm-3
+        vmr = n / (7.2429e18 * 1000.0 / T)
+        expect = amount * ref_column * synthetic_xsc(wn, 'H2O', T, vmr=vmr)
+        got = analysis.continuumOD(calib, amount, T)
+        assert np.max(np.abs(got - expect)) < 2e-3 * np.max(expect), (amount, T)
+    # held: the same optical depth at the configured temperature from both calibrations
+    assert np.allclose(analysis.continuumOD(held.reference['atm']['OD_calib']['H2O'], 0.4, 281.0),
+                       analysis.continuumOD(calib, 0.4, 281.0), rtol=0, atol=2e-3 * np.max(expect))

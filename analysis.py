@@ -235,6 +235,15 @@ def speciesOf(name):
     return name[:-6] if name.endswith('_plume') else name
 
 
+def continuumOD(calib, amount, temp):
+    """Optical depth of a continuum gas (H2O) from its calibration: a polynomial
+    in amount (2-D, the layer temperature held), or polynomials in temperature
+    of each amount coefficient (3-D, the layer temperature varies)."""
+    if np.ndim(calib) == 3:
+        calib = np.polyval(calib, temp)
+    return np.polyval(calib, amount)
+
+
 def codeId():
     """sha256 (first 16 hex digits) of the source files that generate and read the
     cross-sections and of the RFM executable that computes them, so that a
@@ -545,9 +554,11 @@ class Analyser(object):
                 def layerReference(layer, gases, length, T, P, temps, T_varies):
                     """Reference column, cross-section at the layer T and P and
                     calibration of each gas of a layer. A continuum gas is calibrated
-                    in amount (scalings) at T and P; any other gas over `temps` when
-                    the layer temperature varies (T_varies), else it has the
-                    cross-section at T, as a polynomial of degree 0."""
+                    in amount (scalings) at T and P, and when the layer temperature
+                    varies (T_varies) in amount at each of `temps` and then in
+                    temperature (continuumOD); any other gas over `temps` when the
+                    temperature varies, else it has the cross-section at T, as a
+                    polynomial of degree 0."""
                     ref[layer]['OD_calib'] = {}
                     calls, plan = [], []
                     for gas in gases:
@@ -556,7 +567,13 @@ class Analyser(object):
                         ref_column = ppm2scd(ref_conc, length, temp=T, pres=P)
                         ref[layer]['ref_column'][gas] = ref_column
                         first = len(calls)
-                        if species in continuum_gases:
+                        if species in continuum_gases and T_varies:
+                            kind = 'continuum_T'
+                            for t in temps:            # the reference column at each temperature, scaled
+                                conc_t = scd2ppm(ref_column, length, temp=t, pres=P)
+                                calls += [dict(conc=conc_t * sc, species=species, temp=t, pres=P) for sc in scalings]
+                            calls.append(dict(conc=ref_conc, species=species, temp=T, pres=P))
+                        elif species in continuum_gases:
                             kind = 'continuum'
                             calls += [dict(conc=ref_conc * sc, species=species, temp=T, pres=P) for sc in scalings]
                         elif T_varies:
@@ -576,7 +593,21 @@ class Analyser(object):
                     pbar.close()
 
                     for gas, kind, first in plan:
-                        if kind == 'continuum':
+                        if kind == 'continuum_T':
+                            # amount polynomial at each temperature, then a polynomial in
+                            # temperature of each of its coefficients: shape
+                            # (T degree + 1, amount degree + 1, model grid)
+                            nS = len(scalings)
+                            C = np.empty([len(temps), 11, len(self.model_grid)], dtype=float)
+                            for i in range(len(temps)):
+                                ODs = np.empty([len(self.model_grid), nS], dtype=float)
+                                for j in range(nS):
+                                    ODs[:, j] = Bext[first + i * nS + j] * length * 1e3
+                                C[i] = np.polyfit(scalings, ODs.T, 10)
+                            ref[layer]['OD_calib'][gas] = np.polyfit(temps, C.reshape(len(temps), -1), 10).reshape(
+                                11, 11, len(self.model_grid))
+                            ref[layer][gas] = Bext[first + len(temps) * nS] * length * 1e3
+                        elif kind == 'continuum':
                             ODs = np.empty([len(self.model_grid), len(scalings)], dtype=float)
                             for j in range(len(scalings)):
                                 ODs[:, j] = Bext[first + j] * length * 1e3
@@ -1887,7 +1918,7 @@ class Analyser(object):
         atm_gases = [params[n].name for n in p if params[n].atm_gas]
         for gas in atm_gases:
             if gas in continuum_gases:
-                OD_gas = np.polyval(self.reference['atm']['OD_calib'][gas], p[gas])
+                OD_gas = continuumOD(self.reference['atm']['OD_calib'][gas], p[gas], p['atm_temp'])
             else:
                 OD_gas = p[gas] * np.polyval(self.reference['atm']['OD_calib'][gas], p['atm_temp'])
             OD_atm = OD_atm + OD_gas
@@ -1898,8 +1929,8 @@ class Analyser(object):
         plume_gases = [params[n].name for n in p if params[n].plume_gas]
         for gas in plume_gases:
             if speciesOf(gas) in continuum_gases:
-                OD_gas = np.polyval(self.reference['plume']['OD_calib'][gas], p[gas])
-                OD_gasE = OD_gas            # calibrated in amount, not temperature
+                OD_gas = continuumOD(self.reference['plume']['OD_calib'][gas], p[gas], p['gas_temp'])
+                OD_gasE = continuumOD(self.reference['plume']['OD_calib'][gas], p[gas], p['gasE_temp'])
             else:
                 OD_gas = p[gas] * np.polyval(self.reference['plume']['OD_calib'][gas], p['gas_temp'])
                 OD_gasE = p[gas] * np.polyval(self.reference['plume']['OD_calib'][gas], p['gasE_temp'])

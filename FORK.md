@@ -29,6 +29,7 @@ its size.
 | 7 | Tests | none |
 | 8 | This file | none |
 | 9 | Reference cross-sections from several RFM runs at a time | none (bit-identical); the reference step takes about 1/N of the time on N cores |
+| 10 | A continuum gas (H2O) follows a fitted or imposed temperature of its layer | change only where the temperature of a layer with H2O varies; it was ignored |
 
 ## What is new to set
 
@@ -59,8 +60,9 @@ needed.
 
 - In the emission and solar geometries a gas is in one layer only (commit 4
   covers the layer geometry).
-- Plume-layer continuum gases (H2O) are calibrated in amount at the
-  configured plume temperature and ignore the fitted plume temperature.
+- A continuum gas in a layer whose temperature varies needs 21 x 21 RFM
+  runs (amounts at each temperature), against 21 when the temperature is
+  held.
 - `FitResult.rmse` is the mean squared error (sklearn
   `mean_squared_error`), not its root.
 - `FitResult.params` is the Analyser's own `Parameters` object, not a copy.
