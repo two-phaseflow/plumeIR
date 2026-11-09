@@ -14,6 +14,7 @@ import pickle
 import jcamp
 import PyMieScatt
 from subprocess import run, DEVNULL
+from rfmexe import rfm_executable
 from atmosphere import writeRFMdrv, readRFM
 from glob import glob
 from tqdm import tqdm
@@ -174,13 +175,27 @@ def makeGasXSC(wn_start, wn_stop, nper_wn, conc=1.0, temp=298, pres=1013, specie
     # ---------------------------------------------------------------------
     elif species in rfm_gases:
 
-        # Write RFM driver and run
+        # Write RFM driver and run. RFM always writes the same output file name
+        # for a homogeneous path, so a failed run would leave the previous call's
+        # optical depth in place: remove it first and check the run.
+        out_file = './RFM/output/opt00100.out'
+        if os.path.exists(out_file):
+            os.remove(out_file)
         writeRFMdrv(wn_start, wn_stop, nper_wn, layer=True, pathlength=0.1, gas=species, conc={species: conc},
                     temp=temp, pres=pres, out="OPT")
-        run('./RFM/source/rfm', stdout=DEVNULL)
+        proc = run([rfm_executable()], stdout=DEVNULL)
+        log = open('rfm.log').read() if os.path.exists('rfm.log') else ''
+        if proc.returncode != 0 or 'Successful completion' not in log or not os.path.exists(out_file):
+            raise RuntimeError('RFM failed for %s %.0f-%.0f cm-1 (T=%.1f K, P=%.1f hPa); end of rfm.log:\n%s'
+                               % (species, wn_start, wn_stop, temp, pres, log[-2000:]))
 
-        # Read Optical Depth
-        Bext = readRFM('./RFM/output/opt00100.out')['data'] / 100
+        # Read Optical Depth and check that it is the requested spectrum
+        rfm_out = readRFM(out_file)
+        if abs(rfm_out['wn_start'] - wn_start) > 1e-6 or abs(rfm_out['wn_stop'] - wn_stop) > 1e-6 \
+                or len(rfm_out['data']) != npts:
+            raise RuntimeError('RFM output %s does not match the request %.4f-%.4f cm-1, %i points'
+                               % (out_file, wn_start, wn_stop, npts))
+        Bext = rfm_out['data'] / 100
 
     else:
         raise ValueError('Invalid gas species. Please supply a species name from the following: %s' % possible_gases)

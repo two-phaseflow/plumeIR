@@ -26,6 +26,7 @@ from scipy.ndimage import uniform_filter1d
 
 from atmosphere import *
 from customXSC import *
+from rfmexe import rfm_executable
 from spectra import read_spectrum
 from initialise import readConfig, readStandard
 from constants import plot_colors, pretty_names, apod_types, atm_temps, gas_temps
@@ -203,6 +204,46 @@ def makeILS(fov=0.03, max_opd=1.8, nper_wn=25, wn=1000, apod_type='NB medium'):
     out['fov_width'] = fov_width
 
     return out
+
+
+# ======================================================================================================================
+#                      Identifiers of the line list and of the code, for the reference-cache header
+# ======================================================================================================================
+def lineListId():
+    """sha256 of the RFM line list in use (PLUMEIR_HIT, or the default
+    ./RFM/Hitran/hitran_2020.bin), as 'sha256:<hex>'. The driver may pass the
+    hash as PLUMEIR_HIT_SHA256 to avoid re-reading a large file."""
+    import hashlib
+    path = os.environ.get("PLUMEIR_HIT") or "./RFM/Hitran/hitran_2020.bin"
+    tag = os.environ.get("PLUMEIR_HIT_SHA256")
+    if not tag:
+        h = hashlib.sha256()
+        try:
+            with open(path, "rb") as f:
+                for block in iter(lambda: f.read(1 << 24), b""):
+                    h.update(block)
+            tag = h.hexdigest()
+            os.environ["PLUMEIR_HIT_SHA256"] = tag
+        except OSError:
+            return "missing:%s" % path
+    return "sha256:%s" % tag
+
+
+def codeId():
+    """sha256 (first 16 hex digits) of the source files that generate and read the
+    cross-sections and of the RFM executable that computes them, so that a
+    change of either invalidates saved references."""
+    import hashlib
+    here = os.path.dirname(os.path.abspath(__file__))
+    h = hashlib.sha256()
+    for name in ("analysis.py", "atmosphere.py", "customXSC.py", "unitConversion.py", "standards.txt"):
+        p = os.path.join(here, name)
+        if os.path.exists(p):
+            h.update(open(p, "rb").read())
+    exe = rfm_executable()
+    if os.path.exists(exe):
+        h.update(b"rfm:" + open(exe, "rb").read())
+    return h.hexdigest()[:16]
 
 
 # ======================================================================================================================
@@ -408,19 +449,24 @@ class Analyser(object):
         if self.type == 'layer':
 
             # Generate header for looking up references
+            # Everything the cross-sections depend on, so that a saved reference is
+            # reused only when it would be recomputed identically: T and P to 0.01,
+            # the line list and the code that writes the RFM driver and reads it back
             header = "Pathlength: %.3f\n" \
                      "Plume thickness: %.3f\n" \
-                     "Atmospheric temperature: %i K\n" \
-                     "Atmospheric pressure: %i mbar\n" \
-                     "Plume temperature: %i K\n" \
+                     "Atmospheric temperature: %.2f K\n" \
+                     "Atmospheric pressure: %.2f mbar\n" \
+                     "Plume temperature: %.2f K\n" \
                      "Gas Temp range: %i-%i K\n" \
                      "Atm Temp range: %i-%i K\n" \
-                     "Plume pressure: %i mbar\n" \
+                     "Plume pressure: %.2f mbar\n" \
                      "Fit window: %i - %i cm^-1\n" \
                      "Spectral resolution: %.3f cm^-1\n" \
                      "Atmospheric gases: %s\n" \
                      "Plume gases: %s\n" \
                      "Plume aerosols: %s\n" \
+                     "Line list: %s\n" \
+                     "Code: %s\n" \
                      % (self.geometry.pathlength,
                         self.geometry.plume_thickness,
                         self.geometry.atm_temp,
@@ -433,7 +479,9 @@ class Analyser(object):
                         self.model_spacing,
                         self.params.atmGasList(),
                         self.params.plumeGasList(),
-                        self.params.plumeAeroList())
+                        self.params.plumeAeroList(),
+                        lineListId(),
+                        codeId())
 
             # Compare headers to see if any of the saved references are a match
             old_refs = glob(self.data_dir + '/layerReference*.pkl')
@@ -510,10 +558,10 @@ class Analyser(object):
                             pbar.set_description('%s: %.1f scaling' % (gas, sc))  # Change pbar message
                             # Generate OD cross-section
                             ODs[:, j] = makeGasXSC(self.wn_start, self.wn_stop, self.nper_wn, conc=ref_conc * sc,
-                                                   species=gas)['Bext'] * self.geometry.pathlength * 1e3
+                                                   species=gas, temp=self.geometry.atm_temp, pres=self.geometry.atm_pres)['Bext'] * self.geometry.pathlength * 1e3
                             if sc == 1.0:
                                 ref['atm'][gas] = makeGasXSC(self.wn_start, self.wn_stop, self.nper_wn, conc=ref_conc,
-                                                             species=gas)['Bext'] * self.geometry.pathlength * 1e3
+                                                             species=gas, temp=self.geometry.atm_temp, pres=self.geometry.atm_pres)['Bext'] * self.geometry.pathlength * 1e3
                             pbar.update()
                         ref['atm']['OD_calib'][gas] = np.polyfit(scalings, ODs.T, 10)
 
@@ -526,15 +574,14 @@ class Analyser(object):
                                            pres=self.geometry.atm_pres)
                             # Generate OD cross-section
                             ODs[:, j] = makeGasXSC(self.wn_start, self.wn_stop, self.nper_wn, conc=conc,
-                                                   species=gas, temp=t, pres=self.geometry.plume_pres)[
+                                                   species=gas, temp=t, pres=self.geometry.atm_pres)[
                                             'Bext'] * self.geometry.pathlength * 1e3
                             pbar.update()
 
                         ref['atm']['OD_calib'][gas] = np.polyfit(atm_temps, ODs.T, 10)
                         ref['atm'][gas] = makeGasXSC(self.wn_start, self.wn_stop, self.nper_wn, conc=ref_conc,
-                                                       species=gas, temp=self.geometry.plume_temp,
-                                                       pres=self.geometry.plume_pres)[
-                                                'Bext'] * self.geometry.pathlength * 1e3
+                                                     species=gas, temp=self.geometry.atm_temp,
+                                                     pres=self.geometry.atm_pres)['Bext'] * self.geometry.pathlength * 1e3
                     pbar.set_description('Done!')
                 pbar.close()
                 logger.info('...Done!')
@@ -759,7 +806,7 @@ class Analyser(object):
                             # Write RFM driver and run
                             writeRFMdrv(self.wn_start, self.wn_stop, self.nper_wn, layer=False, atm=scaled,
                                         height=self.geometry.obs_height, elev=self.geometry.elev, gas=gas)
-                            run('./RFM/source/rfm', stdout=DEVNULL)
+                            run([rfm_executable()], stdout=DEVNULL)
 
                             # Generate OD cross-section
                             ODs[:, j] = readRFM('./RFM/output/opt%05d.out' % (self.geometry.elev * 1e3))['data']
@@ -775,7 +822,7 @@ class Analyser(object):
                         # Write RFM driver and run
                         writeRFMdrv(self.wn_start, self.wn_stop, self.nper_wn, layer=False, atm=dist,
                                     height=self.geometry.obs_height, elev=self.geometry.elev, gas=gas)
-                        run('./RFM/source/rfm', stdout=DEVNULL)
+                        run([rfm_executable()], stdout=DEVNULL)
 
                         # Read Optical Depth
                         ref['atm'][gas] = readRFM('./RFM/output/opt%05d.out' % (self.geometry.elev * 1e3))['data']
@@ -984,7 +1031,7 @@ class Analyser(object):
                     atm_scaled, scaled = scaleAtm(prox, sc, which=gas, outpath=True)
                     writeRFMdrv(self.wn_start, self.wn_stop, self.nper_wn, layer=False, atm=scaled,
                                 height=self.geometry.obs_height, elev=self.geometry.elev, gas=atm_gases)
-                    run('./RFM/source/rfm', stdout=DEVNULL)
+                    run([rfm_executable()], stdout=DEVNULL)
                     # Read Optical Depth and Radiance
                     L[:, j] = readRFM('./RFM/output/rad%05d.out' % (self.geometry.elev * 1e3))['data'] / 100
                     T[:, j] = readRFM('./RFM/output/tra%05d.out' % (self.geometry.elev * 1e3))['data']
@@ -1020,7 +1067,7 @@ class Analyser(object):
                         atm_scaled, scaled = scaleAtm(slice, sc, which=gas, outpath=True)
                         writeRFMdrv(self.wn_start, self.wn_stop, self.nper_wn, layer=False, atm=scaled,
                                     height=self.geometry.h1, elev=self.geometry.elev, gas=atm_gases)
-                        run('./RFM/source/rfm', stdout=DEVNULL)
+                        run([rfm_executable()], stdout=DEVNULL)
                         # Read Optical Depth and Radiance
                         L[:, j] = readRFM('./RFM/output/rad%05d.out' % (self.geometry.elev * 1e3))['data'] / 100
                         T[:, j] = readRFM('./RFM/output/tra%05d.out' % (self.geometry.elev * 1e3))['data']
@@ -1054,7 +1101,7 @@ class Analyser(object):
                     atm_scaled, scaled = scaleAtm(dist, sc, which=gas, outpath=True)
                     writeRFMdrv(self.wn_start, self.wn_stop, self.nper_wn, layer=False, atm=scaled,
                                 height=self.geometry.h2, elev=self.geometry.elev, gas=atm_gases)
-                    run('./RFM/source/rfm', stdout=DEVNULL)
+                    run([rfm_executable()], stdout=DEVNULL)
                     # Read Optical Depth and Radiance
                     L[:, j] = readRFM('./RFM/output/rad%05d.out' % (self.geometry.elev * 1e3))['data'] / 100
                     T[:, j] = readRFM('./RFM/output/tra%05d.out' % (self.geometry.elev * 1e3))['data']

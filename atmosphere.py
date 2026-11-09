@@ -9,6 +9,7 @@ This module contains functions to read and define atmospheric profile, and to ru
 import numpy as np
 import matplotlib.pyplot as plt
 import warnings
+import os
 from unitConversion import *
 from datetime import datetime
 warnings.filterwarnings("ignore")
@@ -1034,7 +1035,15 @@ def writeRFMdrv(wn_start, wn_stop, npwer_wn, height=0.0, elev=90.0, atm="./atm/m
     # ---------------------- HIT SECTION  -----------------------
     # Define location of HITRAN
     drv.write("*HIT\n")
-    drv.write("./RFM/Hitran/hitran_2020.bin")
+    # line list from PLUMEIR_HIT (.bin, or .par through
+    # per-window per-gas subsets); default unchanged
+    hit = os.environ.get("PLUMEIR_HIT")
+    if hit and hit.lower().endswith(".par"):
+        drv.write(_par_subset(hit, wn_start, wn_stop, gas))
+    elif hit:
+        drv.write(hit)
+    else:
+        drv.write("./RFM/Hitran/hitran_2020.bin")
     drv.write("\n\n")
 
     # # ---------------------- LEV SECTION  -----------------------
@@ -1414,3 +1423,54 @@ def plotAtm2(atm, title='RFM atmosphere', upto=None):
         axes[i].set(title=title, ylabel='Height [km]', xlabel=xlabel, ylim=[0, upto])
         axes[i].tick_params(axis="y", direction="in", right="on")
         axes[i].label_outer()
+
+
+# ---------------------------------------------------------------------------
+# HITRAN .par subsets for RFM (see writeRFMdrv)
+# ---------------------------------------------------------------------------
+_HITRAN_ID = {"H2O": 1, "CO2": 2, "O3": 3, "N2O": 4, "CO": 5, "CH4": 6, "O2": 7, "NO": 8, "SO2": 9,
+              "NO2": 10, "NH3": 11, "HNO3": 12, "OH": 13, "HF": 14, "HCL": 15, "HBR": 16, "HI": 17,
+              "CLO": 18, "OCS": 19, "H2CO": 20, "N2": 22, "HCN": 23, "SF6": 30, "H2S": 31}
+
+
+def _par_subset(par, wn_start, wn_stop, gas, margin=50.0):
+    """All lines of `gas` within the RFM range +- margin, bracketed by the first
+    and last line (any molecule) of that range so the file spans RFM's 25 cm-1
+    cut-off. Cached in ./RFM/Hitran/subsets/ under the line list's sha256
+    (PLUMEIR_HIT_SHA256, set by the driver), so a changed file never reuses
+    old subsets."""
+    import hashlib
+    lo, hi = wn_start - margin, wn_stop + margin
+    tag = os.environ.get("PLUMEIR_HIT_SHA256")
+    if not tag:
+        h = hashlib.sha256()
+        with open(par, "rb") as f:
+            for block in iter(lambda: f.read(1 << 24), b""):
+                h.update(block)
+        tag = h.hexdigest()
+        os.environ["PLUMEIR_HIT_SHA256"] = tag
+    tag = tag[:16]
+    d = os.path.join(".", "RFM", "Hitran", "subsets")
+    os.makedirs(d, exist_ok=True)
+    allf = os.path.join(d, "%s_%.0f_%.0f.par" % (tag, lo, hi))
+    if not os.path.exists(allf):
+        with open(par, "rb") as f, open(allf + ".tmp", "wb") as o:
+            for line in f:
+                w = float(line[3:15])
+                if w < lo:
+                    continue
+                if w > hi:
+                    break
+                o.write(line.rstrip(b"\r\n") + b"\n")
+        os.replace(allf + ".tmp", allf)
+    gases = gas.upper().split()
+    if len(gases) != 1 or gases[0] not in _HITRAN_ID:
+        return allf.replace(os.sep, "/")
+    gf = allf[:-4] + "_%s.par" % gases[0]
+    if not os.path.exists(gf):
+        lines = open(allf, "rb").read().splitlines()
+        sel = [l for l in lines if int(l[0:2]) == _HITRAN_ID[gases[0]]]
+        with open(gf + ".tmp", "wb") as o:
+            o.write(b"\n".join([lines[0]] + sel + [lines[-1]]) + b"\n")
+        os.replace(gf + ".tmp", gf)
+    return gf.replace(os.sep, "/")
