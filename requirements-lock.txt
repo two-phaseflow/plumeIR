@@ -1,0 +1,29 @@
+# Full environment of the Reykjanes runs (Python 3.11.18, Linux x86_64)
+brukeropusreader==1.3.4
+cloudpickle==3.1.2
+contourpy==1.3.3
+cycler==0.12.1
+fonttools==4.68.0
+jcamp==1.3.2
+joblib==1.6.0
+kiwisolver==1.5.1
+matplotlib==3.9.4
+numpy==1.26.4
+packaging==26.3
+pandas==2.2.3
+pillow==13.0.0
+pymiescatt==1.8.1.1
+pyparsing==3.3.3
+python-dateutil==4.0.0
+pytz==2026.6
+scikit-learn==1.5.2
+scipy==1.13.1
+setuptools==84.2.1
+shapely==2.2.0
+threadpoolctl==3.8.0
+tqdm==4.70.1
+tzdata==2026.6
+# The SPC reader (rohanisaac/spc, GPLv3) is not on PyPI in this version and its
+# setup.py imports numpy and setuptools, so install it afterwards without build
+# isolation:
+#   pip install --no-build-isolation "spc @ git+https://github.com/rohanisaac/spc@f35b90fedb995778ad11b276582d89e233774e5e"
