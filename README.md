@@ -1,5 +1,8 @@
 # plumeIR
 
+> This is a fork. See [FORK.md](FORK.md) for the fixes it carries, the
+> settings they add and how to run its tests.
+
 plumeIR is a program designed to retrieve gas and particulate column densities from IR spectra measured in emission geometry by Open-Path Fourier Transform (OP-FTIR) spectrometers, with the specific purpose of monitoring volcanic emissions.
 
 ## Create Python Environment
