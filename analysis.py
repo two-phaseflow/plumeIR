@@ -101,11 +101,15 @@ def makeILS(fov=0.03, max_opd=1.8, nper_wn=25, wn=1000, apod_type='NB medium'):
     apod_type = apod_type.lower()
 
     # ----- Build grid based on max OPD -----
-    n = int(L * nper_wn)
-    if n % 2 == 0:
-        n = n + 1
-    L_grid = np.linspace(0, L, n)
-    n_tot = int(total_opd * nper_wn)
+    # OPD samples at exactly 1/nper_wn cm, so that the FFT bins below are
+    # exactly 1/nper_wn cm-1 apart, the spacing of the model grid the kernel is
+    # applied to. (linspace(0, L, n) with n = int(L*nper_wn) gave a spacing of
+    # L/(n-1) and hence a kernel 3-10 % too wide for max_opd that is not a
+    # multiple of 2/nper_wn.) The apodisation is evaluated as a function of
+    # OPD/L, so L itself stays exact.
+    n = int(np.floor(L * nper_wn + 1e-9)) + 1
+    L_grid = np.arange(n) / nper_wn
+    n_tot = int(round(total_opd * nper_wn))
     filler = np.zeros(n_tot - n)
 
     # ----- Build apodization functions -----
@@ -152,35 +156,48 @@ def makeILS(fov=0.03, max_opd=1.8, nper_wn=25, wn=1000, apod_type='NB medium'):
     # ----- Take Fourier Transform and get sampling kernel -----
     kernel = np.fft.fft(np.concatenate((apod, filler))) .real    # Add zeros to simulate infinite length and take FT
     middle = n_tot // 2
-    kernel = np.concatenate((kernel[middle:], kernel[0:middle]))  # Split in the middle and mirror around wn_grid
+    kernel = np.roll(kernel, middle)    # zero frequency at index `middle`, the centre of wn_grid below
     offset = kernel[0:middle // 2].mean(axis=0)
     kernel = kernel - offset        # Remove offset in spectrum
 
-    # Create the wavenumber grid centred on zero
-    wn_grid = np.linspace(-total_opd / 2, total_opd / 2, n_tot)
+    # Create the wavenumber grid centred on zero (spacing exactly 1/nper_wn)
+    wn_grid = (np.arange(n_tot) - middle) / nper_wn
 
     # Build boxcar filter for FOV effect
     fov_width = wn * (fov/2) ** 2 / 2  # in [cm^-1]
-    n_box = int(np.ceil(fov_width * nper_wn))
-    if n_box < 0 or n_box > middle:
-        n_box = 5
-    boxcar = np.ones(n_box) * 1 / n_box
+    # The grid spans +-nper_wn/2 cm-1. A wide FOV box (with the 5 lobes kept
+    # below) needs more: extend it with zeros, where the apodised kernel has
+    # already decayed. Narrower boxes leave the grid and the kernel unchanged.
+    pad = max(0, int(np.ceil((fov_width + 5 / L + 1) * nper_wn)) - middle)
+    if pad:
+        kernel = np.pad(kernel, pad)
+        middle += pad
+        wn_grid = (np.arange(kernel.size) - middle) / nper_wn
+    # box with fractional edge samples, so the kernel width
+    # changes continuously with fov and fit_fov has a usable gradient
+    half = 0.5 * fov_width * nper_wn
+    j = np.arange(-int(np.ceil(half)), int(np.ceil(half)) + 1)
+    boxcar = np.clip(half + 0.5 - np.abs(j), 0.0, 1.0)
+    boxcar = boxcar / boxcar.sum()
     kernel = np.convolve(kernel, boxcar, 'same')
 
     # Apply shift due to FOV effect
     shift = fov_width / 2
     shift_wn_grid = wn_grid - shift
     kernel = np.interp(wn_grid, shift_wn_grid, kernel)
-    kernel = kernel / kernel.sum(axis=0)
 
-    # Only keep the first 5 limbs
-    idx = np.abs(wn_grid) <= 5 / L
+    # Keep the first 5 lobes beyond the FOV box, which spans 0 to -fov_width
+    # after the shift; symmetric about 0 so the kernel stays centred. The
+    # selection has an odd number of samples with wn = 0 in the middle, so
+    # np.convolve(..., 'same') introduces no shift. Normalise after cutting.
+    idx = np.abs(wn_grid) <= 5 / L + fov_width
     wn_grid = wn_grid[idx]
     kernel = kernel[idx]
+    kernel = kernel / kernel.sum(axis=0)
 
     # Populate kernel array
-    out['wn_grid'] = wn_grid[0:-1]
-    out['kernel'] = kernel[1:]
+    out['wn_grid'] = wn_grid
+    out['kernel'] = kernel
     out['L_grid'] = L_grid
     out['apod'] = apod
     out['fov_width'] = fov_width
@@ -1905,7 +1922,7 @@ class Analyser(object):
                 F_raw = F_raw + Bg * E_plume * self.res_model * T_atm * bg_poly
 
         # Generate ILS and convolve
-        kernel = makeILS(fov=p['fov'], nper_wn=self.nper_wn, wn=(wn.max() - wn.min()) / 2, max_opd=p['max_opd'],
+        kernel = makeILS(fov=p['fov'], nper_wn=self.nper_wn, wn=(wn.max() + wn.min()) / 2, max_opd=p['max_opd'],
                          apod_type=self.apod_type)['kernel']
         F_conv = np.convolve(F_raw, kernel, 'same')
 
@@ -2022,7 +2039,7 @@ class Analyser(object):
         # ----- 6: Generate ILS, shift and offset and project onto spectrometer grid ------
         # ILS
         # kernel = makeILS1(fov=p['fov'], nper_wn=self.nper_wn, wn_start=wn.min())['kernel']
-        kernel = makeILS(fov=p['fov'], nper_wn=self.nper_wn, wn=(wn.max() - wn.min()) / 2)['kernel']
+        kernel = makeILS(fov=p['fov'], nper_wn=self.nper_wn, wn=(wn.max() + wn.min()) / 2)['kernel']
         F_conv = np.convolve(F_raw, kernel, 'same')
 
         # Offset

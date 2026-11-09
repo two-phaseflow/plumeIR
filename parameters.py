@@ -134,7 +134,8 @@ class Parameters(OrderedDict):
                            min=std[species]['vmin'], max=std[species]['vmax'])
 
         # Add the spectral grid parameters
-        self.add('fov', value=retrieval.fov, min=0.01, max=0.15, vary=retrieval.fit_fov, target='fov' in targets)
+        self.add('fov', value=retrieval.fov, min=retrieval.fov_min, max=retrieval.fov_max, vary=retrieval.fit_fov,
+                 target='fov' in targets)
         self.add('max_opd', value=retrieval.max_opd, min=retrieval.max_opd * 0.5, max=retrieval.max_opd * 1.2,
                  vary=retrieval.fit_max_opd, target='max_opd' in targets)
         self.add('nu_shift', value=retrieval.nu_shift, min=-retrieval.nu_shift_max, max=+retrieval.nu_shift_max,
@@ -527,6 +528,8 @@ class Retrieval(object):
                  res_dir=None,
                  fit_fov=True,
                  fov=0.03,
+                 fov_min=0.01,
+                 fov_max=0.15,
                  fit_max_opd=False,
                  max_opd=1.8,
                  apod_type='NB-medium',
@@ -548,6 +551,8 @@ class Retrieval(object):
         # Spectral parameters
         self.fit_fov = fit_fov
         self.fov = float(fov)
+        self.fov_min = float(fov_min)     # bounds of a fitted FOV [rad]; 'inf' for none
+        self.fov_max = float(fov_max)
         self.fit_max_opd = fit_max_opd
         self.max_opd = float(max_opd)
         self.apod_type = apod_type
