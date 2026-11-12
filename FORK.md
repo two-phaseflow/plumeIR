@@ -30,6 +30,7 @@ its size.
 | 8 | This file | none |
 | 9 | Reference cross-sections from several RFM runs at a time | none (bit-identical); the reference step takes about 1/N of the time on N cores |
 | 10 | A continuum gas (H2O) follows a fitted or imposed temperature of its layer | change only where the temperature of a layer with H2O varies; it was ignored |
+| 11 | `headless.py`: ambient columns held fixed and lower bounds of parameters set from the job | none unless a job sets `fix_atm_columns` or `param_min` |
 
 ## What is new to set
 
@@ -41,6 +42,8 @@ its size.
 | environment | `PLUMEIR_HIT_SHA256` | computed | sha256 of that file, so it is not read again |
 | environment | `PLUMEIR_RFM_THREADS` | number of CPUs | RFM runs at a time while the reference cross-sections are made |
 | config | `<gas>_plume` | | name of the plume-layer parameter of a gas that is also an ambient gas |
+| `headless.py` job | `fix_atm_columns` | | {gas: column}: ambient gases held at that column [molec cm-2] |
+| `headless.py` job | `param_min` | | {parameter: lower bound}, e.g. -Infinity for a plume part over a fixed ambient column |
 
 The minimum full-resolution transmittance of the plume and ambient layers
 over the fit window is kept after every forward-model evaluation

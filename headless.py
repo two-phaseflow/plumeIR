@@ -33,6 +33,16 @@ job.json keys
                     number of processes. With update_params each spectrum starts
                     from the previous fit, and the first spectrum of every chunk
                     from the a priori values, as the first of the series does.
+  fix_atm_columns   optional: {gas: column [molec cm-2]}: ambient-layer gases held at
+                    that column in every fit (converted to plumeIR's scaling of the
+                    layer's reference column). With the same gas also in the plume
+                    layer, the plume parameter then carries only the part of the
+                    column that differs from it (a volcanic part at the plume
+                    temperature over a fixed ambient part at the site temperature)
+  param_min         optional: {parameter: lower bound} replacing plumeIR's (0 for a
+                    gas). Such a plume part must be free to go below zero with the
+                    noise, or the spectra with little plume are biased up; JSON
+                    writes minus infinity as -Infinity
   progress          optional: a file this run writes its progress to: first
                     the number of spectra to fit, then one line per fitted
                     spectrum, from every process (progress_start, progress_add)
@@ -106,6 +116,16 @@ class WindowFit:
         an = analysers[0]
         # p0 and bounds of the parameters that vary (as Analyser.__init__ builds
         # them in this fork; repeated here for code without that fix)
+        for gas, column in (job.get("fix_atm_columns") or {}).items():
+            if gas not in an.params or not an.params[gas].atm_gas:
+                raise SystemExit(f"fix_atm_columns: {gas} is not an ambient-layer gas of this window")
+            par = an.params[gas]
+            par.vary = False
+            par.value = float(column) / float(an.reference["atm"]["ref_column"][gas])
+        for name, low in (job.get("param_min") or {}).items():
+            if name not in an.params:
+                raise SystemExit(f"param_min: {name} is not a parameter of this window")
+            an.params[name].min = float(low)
         an.p0 = an.params.fittedValuesList()
         an.bounds = an.params.bounds()
         self.an, self.retrieval = an, retrieval
