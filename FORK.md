@@ -31,7 +31,8 @@ its size.
 | 9 | Reference cross-sections from several RFM runs at a time | none (bit-identical); the reference step takes about 1/N of the time on N cores |
 | 10 | A continuum gas (H2O) follows a fitted or imposed temperature of its layer | change only where the temperature of a layer with H2O varies; it was ignored |
 | 11 | `headless.py`: ambient columns held fixed and lower bounds of parameters set from the job | none unless a job sets `fix_atm_columns` or `param_min` |
-| 12 | Instrument line shape of plumeIR v3 (`ils.py`, ported from its v3-preview branch): exact pedestal, far tails as a broad mean, FOV broadening and shift exact on the interferogram, kernel length fixed for a fit, kernel centred | change wherever lines are resolved; plumeIR v3 measured layer columns 2.4-4.7 % low from the truncation alone |
+| 12 | Instrument line shape of plumeIR v3 (`ils.py`, ported from its v3-preview branch): exact pedestal, far tails as a broad mean, FOV broadening and shift exact on the interferogram, kernel length fixed for a fit, kernel centred | change wherever lines are resolved; plumeIR v3 measured layer columns 2.4-4.7 % low from the truncation alone; on 2024-02-08 Southern fissure 1 columns 1-3 % higher than with commit 2, the set's ratios within 1 sigma (CO2/SO2 -1.9 %, CO2/HCl -4.4 %, SO2/HCl -2.4 %) |
+| 13 | This file: the maximum OPD of the Reykjanes MIDAC files | none |
 
 ## Cross-sections between temperature nodes (tested 18 November 2026)
 
@@ -40,6 +41,17 @@ interpolation between RFM nodes. Against RFM run at the temperature itself, betw
 1 km), the polynomial is within 0.001-0.011 % at the strongest lines of SO2, CO2 and CO, linear interpolation on
 the same nodes 0.03-0.17 %; the H2O amount polynomial (scalings 0-4) is within 0.003 %, linear 0.02-1.2 %. The
 fork keeps the polynomial.
+
+## Maximum OPD of the MIDAC files (tested 18 November 2026)
+
+plumeIR v3 derives `max_opd` from the file as POINTS / (2 LWN), 1.037 cm for 32768 points at 15798 cm-1, which
+holds for a double-sided interferogram. The Reykjanes MIDAC files (Essential FTIR 3.20) record a single-sided
+forward interferogram of 32768 points with ZPD at point 1450, Mertz phase correction, triangle apodisation, zero
+fill 2x and one point per laser fringe, so the maximum OPD is (32768 - 1450) / 15798.04 = 1.98 cm. With `ils.py`
+and `max_opd` fitted together with the FOV, bright spectra still prefer a wider line core (an effective
+`max_opd` of 0.5-0.9 cm, falling with wavenumber, with the FOV at 0.06-0.07 rad): the instrument broadening
+scales with wavenumber, as a FOV does, but is smoother than the uniform-FOV box. The details are in the
+workflow's docs/PLUMEIR.md (Maximum OPD).
 
 ## What is new to set
 
