@@ -31,6 +31,7 @@ from spectra import read_spectrum
 from initialise import readConfig, readStandard
 from constants import plot_colors, pretty_names, apod_types, atm_temps, gas_temps
 from parameters import Retrieval
+from ils import make_ils, apply_ils, kernel_trim_fov
 
 gas_temps = np.linspace(gas_temps[0], gas_temps[1], 21)   # Range of temperatures for the gas
 atm_temps = np.linspace(atm_temps[0], atm_temps[1], 21)   # Range of temperatures for the gas
@@ -86,124 +87,22 @@ def inversePlanck(wn, rad):
 #                                    Instrument Line Shape function
 # ======================================================================================================================
 
-def makeILS(fov=0.03, max_opd=1.8, nper_wn=25, wn=1000, apod_type='NB medium'):
+#: FOV [rad] up to which a fitted FOV's upper bound sets the kernel's length (ils.kernel_trim_fov). The
+#: protocol bounds the FOV at 0.5 rad only to stop a fit that runs away; the largest FOV of any fit of the
+#: Reykjanes sets is 0.166 rad. A live FOV above this widens the kernel to hold its box.
+ILS_TRIM_FOV_CAP = 0.2
 
-    # Populate kernel array
-    out = {}
-    out['apod_type'] = apod_type
-    out['fov'] = fov
-    out['wn'] = wn
 
-    # Relabel variables
-    L = max_opd
-    total_opd = nper_wn    # Total length of 1-sided interferometer is the resolution
-    apod_types = ['Boxcar', 'Uniform', 'Triangular', 'Blackman-Harris', 'Happ-Genzel', 'Hamming', 'Lorenz', 'Gaussian',
-                  'NB weak', 'NB medium', 'NB strong', 'Cosine']
-    apod_type = apod_type.lower()
-
-    # ----- Build grid based on max OPD -----
-    # OPD samples at exactly 1/nper_wn cm, so that the FFT bins below are
-    # exactly 1/nper_wn cm-1 apart, the spacing of the model grid the kernel is
-    # applied to. (linspace(0, L, n) with n = int(L*nper_wn) gave a spacing of
-    # L/(n-1) and hence a kernel 3-10 % too wide for max_opd that is not a
-    # multiple of 2/nper_wn.) The apodisation is evaluated as a function of
-    # OPD/L, so L itself stays exact.
-    n = int(np.floor(L * nper_wn + 1e-9)) + 1
-    L_grid = np.arange(n) / nper_wn
-    n_tot = int(round(total_opd * nper_wn))
-    filler = np.zeros(n_tot - n)
-
-    # ----- Build apodization functions -----
-    # Boxcar function (no apodization, sampling function should be perfect sinc)
-    if 'boxcar' in apod_type or 'uniform' in apod_type:
-        apod = np.ones(n)
-    # Triangular function
-    elif 'triang' in apod_type:
-        apod = 1 - np.abs(L_grid) / L
-    # Norton-Beer functions (NB)
-    elif 'nb' in apod_type or 'norton' in apod_type or 'beer' in apod_type:
-        # 'NB weak'
-        if 'weak' in apod_type:
-            c = [0.348093, -0.087577, 0.703484, 0.0]
-        # NB strong
-        elif 'strong' in apod_type:
-            c = [0.045335, 0.0, 0.554883, 0.399782]
-        # NB medium (default if nothing is specified)
-        else:
-            c = [0.152442, -0.136176, 0.983734, 0]
-        # # Now build
-        apod = np.zeros(n)
-        for i in range(4):
-            apod = apod + c[i] * (1 - (L_grid / L) ** 2) ** i
-
-    # Hamming function (also known as Happ-Genzel function)
-    elif 'hamming' in apod_type or 'happ' in apod_type or 'genzel' in apod_type:
-        apod = 0.54 + 0.46 * np.cos(np.pi * L_grid / L)
-    # Blackman-Harris function
-    elif 'blackman' in apod_type or 'harris' in apod_type:
-        apod = 0.42 + 0.5 * np.cos(np.pi * L_grid / L) + 0.08 * np.cos(2 * np.pi * L_grid / L)
-    # Cosine function
-    elif 'cos' in apod_type:
-        apod = np.cos(np.pi * L_grid / (2 * L))
-    # Lorenz function
-    elif 'lorenz' in apod_type:
-        apod = np.exp(-np.abs(L_grid) / L)
-    elif 'gauss' in apod_type:
-        apod = np.exp(-(2.24 * L_grid / L) ** 2)
-
-    else:
-        ValueError('Invalid keyword for "apod_type". Please choose from (case insensitive) % s' % apod_types)
-
-    # ----- Take Fourier Transform and get sampling kernel -----
-    kernel = np.fft.fft(np.concatenate((apod, filler))) .real    # Add zeros to simulate infinite length and take FT
-    middle = n_tot // 2
-    kernel = np.roll(kernel, middle)    # zero frequency at index `middle`, the centre of wn_grid below
-    offset = kernel[0:middle // 2].mean(axis=0)
-    kernel = kernel - offset        # Remove offset in spectrum
-
-    # Create the wavenumber grid centred on zero (spacing exactly 1/nper_wn)
-    wn_grid = (np.arange(n_tot) - middle) / nper_wn
-
-    # Build boxcar filter for FOV effect
-    fov_width = wn * (fov/2) ** 2 / 2  # in [cm^-1]
-    # The grid spans +-nper_wn/2 cm-1. A wide FOV box (with the 5 lobes kept
-    # below) needs more: extend it with zeros, where the apodised kernel has
-    # already decayed. Narrower boxes leave the grid and the kernel unchanged.
-    pad = max(0, int(np.ceil((fov_width + 5 / L + 1) * nper_wn)) - middle)
-    if pad:
-        kernel = np.pad(kernel, pad)
-        middle += pad
-        wn_grid = (np.arange(kernel.size) - middle) / nper_wn
-    # box with fractional edge samples, so the kernel width
-    # changes continuously with fov and fit_fov has a usable gradient
-    half = 0.5 * fov_width * nper_wn
-    j = np.arange(-int(np.ceil(half)), int(np.ceil(half)) + 1)
-    boxcar = np.clip(half + 0.5 - np.abs(j), 0.0, 1.0)
-    boxcar = boxcar / boxcar.sum()
-    kernel = np.convolve(kernel, boxcar, 'same')
-
-    # Apply shift due to FOV effect
-    shift = fov_width / 2
-    shift_wn_grid = wn_grid - shift
-    kernel = np.interp(wn_grid, shift_wn_grid, kernel)
-
-    # Keep the first 5 lobes beyond the FOV box, which spans 0 to -fov_width
-    # after the shift; symmetric about 0 so the kernel stays centred. The
-    # selection has an odd number of samples with wn = 0 in the middle, so
-    # np.convolve(..., 'same') introduces no shift. Normalise after cutting.
-    idx = np.abs(wn_grid) <= 5 / L + fov_width
-    wn_grid = wn_grid[idx]
-    kernel = kernel[idx]
-    kernel = kernel / kernel.sum(axis=0)
-
-    # Populate kernel array
-    out['wn_grid'] = wn_grid
-    out['kernel'] = kernel
-    out['L_grid'] = L_grid
-    out['apod'] = apod
-    out['fov_width'] = fov_width
-
-    return out
+def makeILS(fov=0.03, max_opd=1.8, nper_wn=25, wn=1000, apod_type='NB medium', trim_opd=None, trim_fov=None):
+    """The instrument line shape of plumeIR v3 (ils.make_ils, 18 November 2026) as the dict the fork's
+    callers read: 'kernel' (unit sum, centred on the middle sample of 'wn_grid', spacing 1/nper_wn),
+    'wn_grid', 'ils' (the ILSKernel, with the tail mass ils.apply_ils gives to the far tails), 'apod' (on
+    'L_grid', the OPD grid, including the FOV self-apodisation) and 'fov_width'. wn is the window centre.
+    trim_opd and trim_fov fix the kernel's length for a fit (make_ils); None follows max_opd and fov."""
+    k = make_ils(fov=fov, max_opd=max_opd, nper_wn=nper_wn, wn_center=wn, apod_type=apod_type,
+                 trim_opd=trim_opd, trim_fov=trim_fov)
+    return {'apod_type': apod_type, 'fov': fov, 'wn': wn, 'wn_grid': k.wn_grid, 'kernel': k.kernel, 'ils': k,
+            'L_grid': k.opd_grid, 'apod': k.apod, 'fov_width': k.fov_width}
 
 
 # ======================================================================================================================
@@ -1885,6 +1784,16 @@ class Analyser(object):
 # ======================================================================================================================
 #                                          Transmission Forward Model
 # ======================================================================================================================
+    def ilsKernel(self, p, wn):
+        """The ILS of one forward-model evaluation (ils.make_ils): the FOV term at the window centre, the
+        kernel's length fixed for the whole fit by the nominal max_opd (retrieval) and the FOV's upper bound
+        (ils.kernel_trim_fov, up to ILS_TRIM_FOV_CAP), so that a held and a fitted FOV give the same kernel.
+        p: the parameter values of the evaluation (a dict), wn: the measurement grid of the window."""
+        fov = self.params['fov']
+        trim_fov = kernel_trim_fov(bool(fov.vary), float(p['fov']), float(fov.max), cap=ILS_TRIM_FOV_CAP)
+        return makeILS(fov=p['fov'], nper_wn=self.nper_wn, wn=(np.max(wn) + np.min(wn)) / 2, max_opd=p['max_opd'],
+                       apod_type=self.apod_type, trim_opd=self.max_opd, trim_fov=trim_fov)['ils']
+
     def forwardTransmission(self, wn, *p0):
         """
 
@@ -1971,10 +1880,8 @@ class Analyser(object):
                 Bg = planck(self.model_grid, p['gasE_temp']) / planck(self.model_grid, p['source_temp'])
                 F_raw = F_raw + Bg * E_plume * self.res_model * T_atm * bg_poly
 
-        # Generate ILS and convolve
-        kernel = makeILS(fov=p['fov'], nper_wn=self.nper_wn, wn=(wn.max() + wn.min()) / 2, max_opd=p['max_opd'],
-                         apod_type=self.apod_type)['kernel']
-        F_conv = np.convolve(F_raw, kernel, 'same')
+        # Generate ILS and convolve (ils.apply_ils: edge-padded, the far tails as a broad mean)
+        F_conv = apply_ils(F_raw, self.ilsKernel(p, wn))
 
         # Apply offset
         F_offset = F_conv + p['offset']
@@ -2088,9 +1995,8 @@ class Analyser(object):
 
         # ----- 6: Generate ILS, shift and offset and project onto spectrometer grid ------
         # ILS
-        # kernel = makeILS1(fov=p['fov'], nper_wn=self.nper_wn, wn_start=wn.min())['kernel']
-        kernel = makeILS(fov=p['fov'], nper_wn=self.nper_wn, wn=(wn.max() + wn.min()) / 2)['kernel']
-        F_conv = np.convolve(F_raw, kernel, 'same')
+        # (as the layer model; plumeIR v2 left max_opd here at makeILS's default)
+        F_conv = apply_ils(F_raw, self.ilsKernel(p, wn))
 
         # Offset
         F_offset = F_conv + p['offset']

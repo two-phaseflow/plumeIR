@@ -31,6 +31,15 @@ its size.
 | 9 | Reference cross-sections from several RFM runs at a time | none (bit-identical); the reference step takes about 1/N of the time on N cores |
 | 10 | A continuum gas (H2O) follows a fitted or imposed temperature of its layer | change only where the temperature of a layer with H2O varies; it was ignored |
 | 11 | `headless.py`: ambient columns held fixed and lower bounds of parameters set from the job | none unless a job sets `fix_atm_columns` or `param_min` |
+| 12 | Instrument line shape of plumeIR v3 (`ils.py`, ported from its v3-preview branch): exact pedestal, far tails as a broad mean, FOV broadening and shift exact on the interferogram, kernel length fixed for a fit, kernel centred | change wherever lines are resolved; plumeIR v3 measured layer columns 2.4-4.7 % low from the truncation alone |
+
+## Cross-sections between temperature nodes (tested 18 November 2026)
+
+plumeIR v3 replaces the degree-10 polynomial in temperature (21 RFM runs, plume 200-800 K) by linear
+interpolation between RFM nodes. Against RFM run at the temperature itself, between nodes (295-565 K, 1000 hPa,
+1 km), the polynomial is within 0.001-0.011 % at the strongest lines of SO2, CO2 and CO, linear interpolation on
+the same nodes 0.03-0.17 %; the H2O amount polynomial (scalings 0-4) is within 0.003 %, linear 0.02-1.2 %. The
+fork keeps the polynomial.
 
 ## What is new to set
 

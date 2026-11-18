@@ -176,7 +176,7 @@ class WindowFit:
         forward model computes the spectrum (Analyser.forwardTransmission) with
         every transmittance set to 1: polynomial on the model grid, convolved
         with the fitted ILS, plus offset, shifted by nu_shift and interpolated."""
-        from analysis import makeILS
+        from ils import apply_ils
         from scipy.interpolate import griddata
         an = self.an
         v = {n: q.fit_val for n, q in r.params.items()}
@@ -184,9 +184,7 @@ class WindowFit:
         mg = np.asarray(an.model_grid, float)
         wn = np.asarray(r.grid, float)
         bg = np.polyval(coef, mg) if coef else np.ones_like(mg)
-        kernel = makeILS(fov=v["fov"], nper_wn=an.nper_wn, wn=(wn.max() + wn.min()) / 2, max_opd=v["max_opd"],
-                         apod_type=an.apod_type)["kernel"]
-        f = np.convolve(bg, kernel, "same") + v.get("offset", 0.0)
+        f = apply_ils(bg, an.ilsKernel(v, wn)) + v.get("offset", 0.0)
         return griddata(mg + v.get("nu_shift", 0.0), f, wn, method="cubic")
 
     def fit_chunk(self, idx):

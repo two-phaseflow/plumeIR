@@ -23,6 +23,7 @@ from initialise import readConfig            # noqa: E402
 import analysis                              # noqa: E402
 import customXSC                             # noqa: E402
 from analysis import makeILS, Analyser       # noqa: E402
+import ils                                    # noqa: E402
 from parameters import Parameters, Geometry, Retrieval  # noqa: E402
 from spectra import Spectrum                 # noqa: E402
 from unitConversion import ppm2scd           # noqa: E402
@@ -148,20 +149,44 @@ def test_ils_fov_shift_sum_and_symmetry(fov, wn):
 
 @pytest.mark.parametrize('fov,wn', [(0.15, 2500.0), (0.2, 4100.0), (0.3, 2085.0), (0.5, 4900.0)])
 def test_ils_wide_fov(fov, wn):
-    """A FOV box wider than the default kernel grid (+-12.5 cm-1) is neither cut
-    nor replaced: the kernel still sums to 1, is centred on -wn fov^2 / 16 and
-    has the spread of the box (width wn fov^2 / 8) and the ILS together."""
+    """A FOV box wider than the line shape's core is held whole (plumeIR v3's kernel, ils.make_ils): the
+    support is the converged core plus the box, the kernel sums to 1, has an odd length with wn = 0 in the
+    middle, and is centred on -wn fov^2 / 16. The far tails beyond the support (ils.apply_ils) sit at the
+    sample, not at the shifted centre, which moves the centroid of what is kept by about tail mass x half
+    the box: allowed 0.2 % of the box. (The second moment of a sinc^2 line shape does not converge, so the
+    spread is not tested.)"""
     o = makeILS(fov=fov, nper_wn=N_PER_WN, wn=wn, max_opd=2.0, apod_type='Triangular')
     k, g = o['kernel'], o['wn_grid']
-    c = (k * g).sum()
     box = wn * fov ** 2 / 8
-    ils_var = (k0 := makeILS(fov=0.0, nper_wn=N_PER_WN, wn=wn, max_opd=2.0, apod_type='Triangular'))['kernel'] \
-        @ k0['wn_grid'] ** 2
     assert abs(k.sum() - 1) < 1e-9
     assert len(k) % 2 == 1 and abs(g[len(g) // 2]) < 1e-9
-    assert abs(c - (-box / 2)) < 0.012
-    # 3 %: the second moment of the sinc^2 tails depends on where the kernel is cut
-    assert abs(np.sqrt(k @ (g - c) ** 2) / np.sqrt(box ** 2 / 12 + ils_var) - 1) < 0.03
+    assert g[-1] >= box + ils.core_support('Triangular', 2.0, float(N_PER_WN)) - 1 / N_PER_WN
+    assert abs((k * g).sum() - (-box / 2)) < 0.012 + 0.002 * box
+
+
+def test_ils_length_fixed_for_a_fit():
+    """With the trim of a fit (nominal max_opd, the FOV's upper bound) the kernel has the same length for
+    every FOV up to that bound, held or fitted, so a held and a fitted FOV see the same kernel and the
+    finite-difference Jacobian sees no new samples; only the shape changes."""
+    n = {makeILS(fov=f, nper_wn=N_PER_WN, wn=2500.0, max_opd=2.0, apod_type='Triangular', trim_opd=2.0,
+                 trim_fov=0.2)['kernel'].size for f in np.linspace(0.0, 0.2, 9)}
+    assert len(n) == 1
+    a = makeILS(fov=0.07, nper_wn=N_PER_WN, wn=2500.0, max_opd=2.0, apod_type='Triangular', trim_opd=2.0, trim_fov=0.2)
+    b = makeILS(fov=0.0700001, nper_wn=N_PER_WN, wn=2500.0, max_opd=2.0, apod_type='Triangular', trim_opd=2.0,
+                trim_fov=0.2)
+    assert 0 < np.abs(a['kernel'] - b['kernel']).max() < 1e-6
+
+
+def test_ils_pedestal_and_tails_keep_line_area():
+    """The one-sided transform's pedestal is exact and the far tails go to a broad mean (ils.apply_ils),
+    so an absorption line keeps its area: the old estimated pedestal and renormalised kernel deepened
+    every line. Equivalent width of a narrow line before and after the ILS, triangle window."""
+    x = np.arange(-150.0, 150.0, 1 / N_PER_WN)
+    tau = 0.3 * np.exp(-0.5 * (x / 0.05) ** 2)
+    T = np.exp(-tau)
+    o = makeILS(fov=0.03, nper_wn=N_PER_WN, wn=2500.0, max_opd=2.0, apod_type='Triangular', trim_opd=2.0, trim_fov=0.2)
+    conv = ils.apply_ils(T, o['ils'])
+    assert abs(np.sum(1 - conv) / np.sum(1 - T) - 1) < 1e-3
 
 
 def test_ils_continuous_in_fov_and_opd():
